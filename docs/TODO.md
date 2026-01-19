@@ -21,6 +21,10 @@
 #### 1.1 보조금24 API 연동
 - [ ] API 키 발급 (https://www.bokjiro.go.kr)
 - [ ] API 스펙 확인 (혜택 목록 조회)
+- [ ] **로컬 환경 변수 로드 구현**
+  - [ ] `python-dotenv` 패키지 추가 (requirements.txt)
+  - [ ] 각 Lambda 함수에 `.env` 로드 코드 추가
+  - [ ] 로컬/AWS 환경 자동 감지 로직
 - [ ] **지역코드 수집 및 저장**
   - [ ] 보조금24 API에서 지역코드 목록 조회
   - [ ] Supabase `regions` 테이블 생성 (region_code, name, parent_code)

@@ -15,8 +15,8 @@ build/
 # 개인 메모
 note.txt
 
-# 환경 변수
-.env
+# 환경 변수 (로컬 개발용 - private repo이므로 포함)
+# .env는 포함, .env.local만 제외
 .env.local
 
 # IDE
