@@ -1,0 +1,212 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 똑순이 서버리스 백엔드 (Supabase + AWS Bedrock)
+
+# ============================================================
+# 파라미터 (배포 시 설정 가능)
+# ============================================================
+Parameters:
+  SupabaseUrl:
+    Type: String
+    Description: Supabase 프로젝트 URL
+    Default: https://your-project-id.supabase.co
+  
+  SupabaseServiceKey:
+    Type: String
+    NoEcho: true
+    Description: Supabase 서비스 역할 키
+  
+  BedrockModelId:
+    Type: String
+    Default: apac.amazon.nova-lite-v1:0
+    Description: Bedrock Model ID for AI processing
+  
+  TitanEmbeddingModelId:
+    Type: String
+    Default: amazon.titan-embed-text-v2:0
+    Description: Titan Embeddings V2 모델 ID
+  
+  Bojogeum24ApiKey:
+    Type: String
+    NoEcho: true
+    Description: 보조금24 API 키
+    Default: ""
+  
+  MoisApiKey:
+    Type: String
+    NoEcho: true
+    Description: 행정안전부 API 키
+    Default: ""
+
+# ============================================================
+# 전역 설정 (K-Wave Now와 동일한 AWS 환경)
+# ============================================================
+Globals:
+  Function:
+    Timeout: 120
+    MemorySize: 512
+    Runtime: python3.11
+    Environment:
+      Variables:
+        # Supabase 설정
+        SUPABASE_URL: !Ref SupabaseUrl
+        SUPABASE_SERVICE_KEY: !Ref SupabaseServiceKey
+        
+        # AWS Bedrock 설정 (K-Wave Now와 동일)
+        BEDROCK_REGION: "ap-northeast-2"
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        TITAN_EMBEDDING_MODEL_ID: !Ref TitanEmbeddingModelId
+        
+        # Slack 알림 (K-Wave Now와 동일 채널)
+        SLACK_MONITORING_WEBHOOK: "https://hooks.slack.com/services/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"
+        SLACK_ERROR_WEBHOOK: "https://hooks.slack.com/services/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"
+        
+        # 공공 API 키
+        BOJOGEUM24_API_KEY: !Ref Bojogeum24ApiKey
+        MOIS_API_KEY: !Ref MoisApiKey
+  
+  Api:
+    Cors:
+      AllowMethods: "'GET,POST,OPTIONS'"
+      AllowHeaders: "'Content-Type,Authorization'"
+      AllowOrigin: "'*'"
+
+# ============================================================
+# 리소스 정의
+# ============================================================
+Resources:
+  # 공통 모듈 Lambda Layer
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: ttok-sun-i-common
+      Description: 공통 모듈 (Supabase, Slack 등)
+      ContentUri: layer/
+      CompatibleRuntimes:
+        - python3.11
+    Metadata:
+      BuildMethod: python3.11
+
+  # 1. 카카오 챗봇 웹훅 핸들러
+  KakaoWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ttok-sun-i-kakao-webhook
+      Description: 카카오톡 챗봇 메시지 처리 및 RAG 응답
+      CodeUri: functions/kakao_webhook/
+      Handler: app.lambda_handler
+      Timeout: 30
+      MemorySize: 512
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+            Resource: 
+              - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+              - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${TitanEmbeddingModelId}"
+      Events:
+        KakaoApi:
+          Type: Api
+          Properties:
+            Path: /kakao/webhook
+            Method: post
+
+  # 2. 데이터 수집 배치 작업
+  DataCollectorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ttok-sun-i-data-collector
+      Description: 공공 혜택 데이터 수집 (매일 오전 11시 KST)
+      CodeUri: functions/data_collector/
+      Handler: app.lambda_handler
+      Timeout: 900  # 15분
+      MemorySize: 1024
+      Layers:
+        - !Ref CommonLayer
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+            Resource:
+              - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+              - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${TitanEmbeddingModelId}"
+          - Effect: Allow
+            Action:
+              - textract:DetectDocumentText
+              - textract:AnalyzeDocument
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource: !Sub "${TempDocsBucket.Arn}/*"
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            # 매일 오전 11시 KST (UTC 02:00)
+            Schedule: "cron(0 2 * * ? *)"
+            Description: "매일 오전 11시 KST에 데이터 수집 실행"
+            Enabled: true
+
+  # 3. Supabase 프로젝트 활성 상태 유지
+  KeepAliveFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ttok-sun-i-keep-alive
+      Description: Supabase 프로젝트 활성 상태 유지 (주 1회)
+      CodeUri: functions/keep_alive/
+      Handler: app.lambda_handler
+      Timeout: 10
+      MemorySize: 128
+      Layers:
+        - !Ref CommonLayer
+      Events:
+        WeeklySchedule:
+          Type: Schedule
+          Properties:
+            # 매주 일요일 오전 9시 KST (UTC 00:00)
+            Schedule: "cron(0 0 ? * SUN *)"
+            Description: "주 1회 Supabase 활성화"
+            Enabled: true
+
+  # 4. S3 버킷 (임시 문서 저장용)
+  TempDocsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'ttok-sun-i-temp-docs-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteAfter1Day
+            Status: Enabled
+            ExpirationInDays: 1
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+# ============================================================
+# 출력값
+# ============================================================
+Outputs:
+  KakaoWebhookUrl:
+    Description: 카카오 챗봇 웹훅 URL
+    Value: !Sub 'https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/kakao/webhook'
+    Export:
+      Name: !Sub '${AWS::StackName}-KakaoWebhookUrl'
+  
+  TempDocsBucketName:
+    Description: 임시 문서 저장 S3 버킷
+    Value: !Ref TempDocsBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-TempDocsBucket'
+  
+  DataCollectorFunctionArn:
+    Description: 데이터 수집 Lambda ARN
+    Value: !GetAtt DataCollectorFunction.Arn
