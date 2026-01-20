@@ -12,8 +12,9 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 
 # Slack 웹훅 URL (K-Wave Now와 동일한 채널 사용)
-SLACK_MONITORING_WEBHOOK_URL = "https://hooks.slack.com/services/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"
-SLACK_ERROR_WEBHOOK_URL = "https://hooks.slack.com/services/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"
+# Slack 웹훅 URL (환경변수 우선, 없으면 하드코딩 값 사용)
+SLACK_MONITORING_WEBHOOK_URL = os.getenv("SLACK_MONITORING_WEBHOOK", "https://hooks.slack.com/services/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")
+SLACK_ERROR_WEBHOOK_URL = os.getenv("SLACK_ERROR_WEBHOOK", "https://hooks.slack.com/services/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")
 
 
 def send_slack_notification(

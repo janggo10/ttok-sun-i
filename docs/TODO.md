@@ -22,14 +22,14 @@
 - [ ] API 키 발급 (https://www.bokjiro.go.kr)
 - [ ] API 스펙 확인 (혜택 목록 조회)
 - [ ] **로컬 환경 변수 로드 구현**
-  - [ ] `python-dotenv` 패키지 추가 (requirements.txt)
-  - [ ] 각 Lambda 함수에 `.env` 로드 코드 추가
-  - [ ] 로컬/AWS 환경 자동 감지 로직
-- [ ] **지역코드 수집 및 저장**
-  - [ ] 보조금24 API에서 지역코드 목록 조회
-  - [ ] Supabase `regions` 테이블 생성 (region_code, name, parent_code)
-  - [ ] 17개 시/도 + 시/군/구 데이터 저장
-  - [ ] 온보딩 파싱용 매핑 테이블 구축
+  - [x] `python-dotenv` 패키지 추가 (requirements.txt)
+  - [x] 각 Lambda 함수에 `.env` 로드 코드 추가
+  - [ ] 로컬/AWS 환경 자동 감지 로직 (AWS Lambda는 환경변수 주입됨)
+- [x] **지역코드 수집 및 저장**
+  - [x] 행정안전부(MOIS) API 연동 완료 (`load_region_codes.py`)
+  - [x] Supabase `regions` 테이블 생성 (region_code, name, parent_code)
+  - [x] 17개 시/도 + 시/군/구 데이터 저장 (20,555건)
+  - [x] 온보딩 파싱용 검색 RPC 함수 구축 (`search_regions.sql`)
 - [ ] `DataCollectorFunction` 구현
   - [ ] 보조금24 API 호출
   - [ ] 응답 파싱 (JSON → Dict)
@@ -38,11 +38,14 @@
 - [ ] 로컬 테스트 (sample 데이터)
 - [ ] CloudWatch 로그 확인
 
-#### 1.2 행정안전부 API 연동 (선택)
-- [ ] API 키 발급
-- [ ] API 스펙 확인
-- [ ] 데이터 수집 로직 추가
-- [ ] 중복 제거 로직 (보조금24와 중복 데이터)
+#### 1.2 행정안전부 API 연동 (완료)
+- [x] API 키 발급 및 적용
+- [x] API 스펙 확인 (행정구역 코드 조회)
+- [x] 데이터 수집 로직 추가 (`RegionUpdaterFunction`)
+- [x] **자동화 및 스케줄링**
+  - [x] AWS Lambda 마이그레이션 (`backend/functions/region_updater`)
+  - [x] 분기별 자동 실행 (3, 6, 9, 12월 말일)
+  - [x] Slack 알림 연동 (성공/실패 채널 분리)
 
 #### 1.3 데이터 임베딩 생성
 - [ ] Bedrock Titan Embeddings V2 연동
@@ -66,16 +69,16 @@
 
 **목표**: 사용자로부터 지역과 출생연도 수집
 
-#### 2.1 지역 파싱 (하이브리드 방식)
-- [ ] 정규식 기반 파서 구현
-  - [ ] 17개 시/도 매칭
-  - [ ] 주요 시/군/구 매칭
-  - [ ] "서울 은평", "은평구" 같은 축약형 처리
-- [ ] Bedrock LLM 폴백
-  - [ ] 정규식 실패 시 LLM에게 주소 파싱 요청
-  - [ ] LLM 응답에서 `region_code` 추출
-- [ ] 애매한 경우 사용자 확인
-  - [ ] "서울특별시 은평구가 맞으신가요?" 버튼 제공
+#### 2.1 지역 설정 (List Card 검색 방식)
+- [x] **구현 가이드 문서 작성** (`docs/ONBOARDING_IMPLEMENTATION_GUIDE.md`)
+- [ ] **지역 검색 및 목록 카드 구현**
+  - [ ] 사용자 입력값으로 `search_regions` RPC 호출
+  - [ ] 검색 결과가 없을 경우 재입력 유도 메시지
+  - [ ] 검색 결과(최대 5개)를 카카오 List Card 형태로 변환
+- [ ] **선택 처리 핸들러 구현**
+  - [ ] "지역선택: {코드}" 패턴 인식 및 파싱
+  - [ ] `users` 테이블에 `region_code` 업데이트
+  - [ ] 완료 후 출생연도 입력 단계로 전환
 
 #### 2.2 출생연도 파싱
 - [ ] 4자리 숫자 추출 (예: "1955", "1960")

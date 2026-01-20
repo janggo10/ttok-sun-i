@@ -38,6 +38,11 @@ Parameters:
     Description: 행정안전부 API 키
     Default: ""
 
+  MoisApiUrl:
+    Type: String
+    Description: 행정안전부 API URL
+    Default: "https://apis.data.go.kr/1741000/StanReginCd/getStanReginCdList"
+
 # ============================================================
 # 전역 설정 (K-Wave Now와 동일한 AWS 환경)
 # ============================================================
@@ -190,6 +195,34 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+
+  # 5. 행정구역 코드 업데이트
+  RegionUpdaterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ttok-sun-i-region-updater
+      Description: 행정구역 코드 업데이트 (분기별 1회)
+      CodeUri: functions/region_updater/
+      Handler: app.lambda_handler
+      Timeout: 900
+      MemorySize: 512
+      Layers:
+        - !Ref CommonLayer
+      Environment:
+        Variables:
+          SUPABASE_URL: !Ref SupabaseUrl
+          SUPABASE_SERVICE_KEY: !Ref SupabaseServiceKey
+          MOIS_API_KEY: !Ref MoisApiKey
+          MOIS_API_URL: !Ref MoisApiUrl
+          SLACK_MONITORING_WEBHOOK: "https://hooks.slack.com/services/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"
+          SLACK_ERROR_WEBHOOK: "https://hooks.slack.com/services/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"
+      Events:
+        QuarterlySchedule:
+          Type: Schedule
+          Properties:
+            # 매 분기(1,4,7,10월) 1일 오전 4시 KST (전일 19:00 UTC)
+            Schedule: cron(0 19 31 3,6,9,12 ? *)
+            Enabled: true
 
 # ============================================================
 # 출력값

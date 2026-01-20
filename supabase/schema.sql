@@ -13,24 +13,36 @@ comment on extension vector is '시니어 혜택 문맥 검색을 위한 벡터 
 -- 마스터 데이터 테이블
 -- ============================================
 
--- [2] 행정동 코드 마스터 테이블
-create table region_codes (
-  code text primary key,
-  full_name text not null,
-  si_do text,
-  si_gun_gu text,
+-- [2] 지역코드 마스터 테이블 (행정안전부 법정동코드)
+create table regions (
+  id bigint primary key generated always as identity,
+  region_code varchar(10) unique not null,  -- 10자리 법정동코드
+  name text not null,                       -- 지역명 (서울특별시, 강남구, 역삼동 등)
+  parent_code varchar(10),                  -- 상위 지역코드
+  sido_code varchar(2),                     -- 시도코드 (11, 26 등)
+  sgg_code varchar(3),                      -- 시군구코드
+  depth int not null,                       -- 깊이 (1:시도, 2:시군구, 3:읍면동, 4:리)
+  order_num int,                            -- 정렬 순서
   is_active boolean default true,
-  deprecated_at timestamp with time zone,
+  deprecated_at timestamp with time zone,    -- 행정구역 통폐합 시 기록
   created_at timestamp with time zone default now(),
   updated_at timestamp with time zone default now()
 );
 
-comment on table region_codes is '전국 행정표준코드 마스터 데이터 (행정안전부 API 연동)';
-comment on column region_codes.deprecated_at is '행정구역 통폐합 시 자동 업데이트';
+comment on table regions is '전국 행정표준코드 마스터 데이터 (행정안전부 API 연동, 분기 1회 갱신)';
+comment on column regions.region_code is '10자리 법정동코드 (예: 1168000000 = 서울특별시 강남구)';
+comment on column regions.depth is '1=시도, 2=시군구(온보딩 저장 레벨), 3=읍면동, 4=리';
+comment on column regions.deprecated_at is '행정구역 통폐합 시 자동 업데이트';
 
-create index idx_region_codes_active on region_codes(is_active) where is_active = true;
-create index idx_region_codes_si_do on region_codes(si_do);
-create index idx_region_codes_si_gun_gu on region_codes(si_gun_gu);
+-- 인덱스 생성
+create index idx_regions_region_code on regions(region_code);
+create index idx_regions_parent_code on regions(parent_code);
+create index idx_regions_sido_code on regions(sido_code);
+create index idx_regions_depth on regions(depth);
+create index idx_regions_active on regions(is_active) where is_active = true;
+
+-- 지역명 검색용 전문 검색 인덱스
+create index idx_regions_name_gin on regions using gin(to_tsvector('simple', name));
 
 -- [3] 카테고리 코드 마스터 테이블
 create table category_codes (
@@ -62,11 +74,17 @@ insert into category_codes (code, name, description, display_order) values
 create table users (
   id uuid primary key default uuid_generate_v4(),
   kakao_user_id text unique not null,
-  region_code text references region_codes(code),
+  
+  -- 읍/면/동 레벨 필수 (애플리케이션 로직에서 검증)
+  -- 세종시는 depth=2 허용, 나머지는 depth>=3
+  region_code varchar(10) NOT NULL references regions(region_code),
+  region_depth int NOT NULL,
+  
   gender text check (gender in ('M', 'F', 'OTHER', null)),
   birth_year int check (birth_year between 1900 and 2100),
   
-  last_region_check_at timestamp with time zone,
+  last_region_check_at timestamp with time zone,    -- 6개월 거주지 확인
+  region_update_count int default 0,                -- 지역 변경 횟수
   is_active boolean default true,
   notification_enabled boolean default true,
   
@@ -76,7 +94,10 @@ create table users (
 
 comment on table users is '이용자 프로필 및 개인화 설정 정보';
 comment on column users.kakao_user_id is '카카오톡 채널 사용자 고유 식별자 (plusfriend_user_key)';
+comment on column users.region_code is '읍/면/동 레벨 지역코드 필수 (depth=3 or 4, 세종시는 depth=2. 예: 1168010100=역삼동, 4113510301=서현동)';
+comment on column users.region_depth is '저장된 지역코드 깊이 (2=세종시 읍/면, 3=읍/면/동, 4=구가 있는 시의 동). 애플리케이션에서 검증';
 comment on column users.last_region_check_at is '6개월 주기 거주지 확인 알림용';
+comment on column users.region_update_count is '이상 패턴 감지용 (이사 횟수 추적)';
 
 create index idx_users_region on users(region_code) where is_active = true;
 create index idx_users_birth_year on users(birth_year) where is_active = true;
@@ -217,6 +238,31 @@ comment on column api_sync_logs.duplicates_skipped is '2단계 중복 제거 전
 create index idx_sync_logs_source on api_sync_logs(source_name, started_at desc);
 create index idx_sync_logs_status on api_sync_logs(status, started_at desc);
 
+-- [10] 온보딩 로그 테이블 (파싱 성공률 모니터링)
+create table onboarding_logs (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid references users(id) on delete cascade,
+  step text not null check (
+    step in ('REGION_INPUT', 'REGION_CONFIRM', 'BIRTH_INPUT', 'ONBOARDING_COMPLETE')
+  ),
+  input_text text,              -- 사용자 입력값
+  parse_method text check (
+    parse_method in ('REGEX', 'LLM', 'BUTTON_SELECT', 'MANUAL_SELECT', null)
+  ),
+  parse_success boolean,        -- 파싱 성공 여부
+  parsed_region_code varchar(10) references regions(region_code),
+  attempt_count int default 1,  -- 재시도 횟수
+  created_at timestamp with time zone default now()
+);
+
+comment on table onboarding_logs is '온보딩 프로세스 모니터링 및 파싱 성공률 분석용';
+comment on column onboarding_logs.step is 'REGION_INPUT: 지역 입력, REGION_CONFIRM: 확인, BIRTH_INPUT: 출생연도, ONBOARDING_COMPLETE: 완료';
+comment on column onboarding_logs.parse_method is 'REGEX: 정규식, LLM: AI파싱, BUTTON_SELECT: 버튼선택, MANUAL_SELECT: 수동선택';
+
+create index idx_onboarding_user on onboarding_logs(user_id, created_at desc);
+create index idx_onboarding_step on onboarding_logs(step, created_at desc);
+create index idx_onboarding_parse_success on onboarding_logs(parse_success, parse_method);
+
 -- ============================================
 -- 유틸리티 함수
 -- ============================================
@@ -236,7 +282,7 @@ create trigger update_users_updated_at before update on users
 create trigger update_benefits_updated_at before update on benefits
   for each row execute function update_updated_at_column();
 
-create trigger update_region_codes_updated_at before update on region_codes
+create trigger update_regions_updated_at before update on regions
   for each row execute function update_updated_at_column();
 
 -- [11] 만료된 혜택 자동 비활성화 함수
@@ -352,12 +398,15 @@ select * from pg_extension where extname in ('vector', 'uuid-ossp');
 do $$
 begin
   raise notice '✅ 똑순이 데이터베이스 스키마 설치 완료!';
-  raise notice '📊 생성된 테이블: 9개';
+  raise notice '📊 생성된 테이블: 10개';
+  raise notice '  - regions (지역코드 마스터, depth 1-4 계층)';
+  raise notice '  - users (시/군/구 레벨 저장, depth=2)';
+  raise notice '  - onboarding_logs (파싱 성공률 모니터링)';
   raise notice '🔧 생성된 함수: 4개';
   raise notice '🔐 RLS 정책: 4개';
   raise notice '';
   raise notice '다음 단계:';
-  raise notice '1. 행정동 코드 데이터 수집';
-  raise notice '2. AWS Lambda 환경 구축';
-  raise notice '3. 카카오 챗봇 연동';
+  raise notice '1. 행정안전부 API 키 발급';
+  raise notice '2. 지역코드 데이터 수집 (분기 1회)';
+  raise notice '3. 온보딩 파싱 로직 구현 (정규식 + LLM + 버튼)';
 end $$;
