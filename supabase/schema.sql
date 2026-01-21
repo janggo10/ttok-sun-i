@@ -13,8 +13,19 @@ comment on extension vector is '시니어 혜택 문맥 검색을 위한 벡터 
 -- 마스터 데이터 테이블
 -- ============================================
 
+-- [0] 기존 테이블 삭제 (초기화)
+drop table if exists onboarding_logs cascade;
+drop table if exists api_sync_logs cascade;
+drop table if exists notification_history cascade;
+drop table if exists user_benefit_interactions cascade;
+drop table if exists benefit_embeddings cascade;
+drop table if exists benefits cascade;
+drop table if exists users cascade;
+drop table if exists category_codes cascade;
+drop table if exists regions cascade;
+
 -- [2] 지역코드 마스터 테이블 (행정안전부 법정동코드)
-create table regions (
+create table if not exists regions (
   id bigint primary key generated always as identity,
   region_code varchar(10) unique not null,  -- 10자리 법정동코드
   name text not null,                       -- 지역명 (서울특별시, 강남구, 역삼동 등)
@@ -44,34 +55,14 @@ create index idx_regions_active on regions(is_active) where is_active = true;
 -- 지역명 검색용 전문 검색 인덱스
 create index idx_regions_name_gin on regions using gin(to_tsvector('simple', name));
 
--- [3] 카테고리 코드 마스터 테이블
-create table category_codes (
-  code text primary key,
-  name text not null,
-  description text,
-  display_order int default 0,
-  created_at timestamp with time zone default now()
-);
 
-comment on table category_codes is '똑순이 서비스 혜택 카테고리 분류 체계';
-
--- 기본 카테고리 데이터 삽입
-insert into category_codes (code, name, description, display_order) values
-  ('C01', '의료지원', '건강검진, 치료비, 의료기기 지원', 1),
-  ('C02', '생활비지원', '기초생활비, 난방비, 통신비 지원', 2),
-  ('C03', '주거지원', '임대료, 주택개보수, 이사비 지원', 3),
-  ('C04', '문화여가', '문화생활, 여행, 체육활동 지원', 4),
-  ('C05', '교육지원', '평생교육, 디지털교육, 자격증 지원', 5),
-  ('C06', '일자리', '시니어 일자리, 창업 지원', 6),
-  ('C07', '돌봄서비스', '요양, 간병, 방문돌봄 서비스', 7),
-  ('C08', '기타', '분류되지 않은 혜택', 99);
 
 -- ============================================
 -- 사용자 데이터 테이블
 -- ============================================
 
 -- [4] 사용자 정보 테이블
-create table users (
+create table if not exists users (
   id uuid primary key default uuid_generate_v4(),
   kakao_user_id text unique not null,
   
@@ -111,7 +102,7 @@ create index idx_users_active on users(is_active);
 -- ============================================
 
 -- [5] 혜택 마스터 테이블 (통합 스키마)
-create table benefits (
+create table if not exists benefits (
   -- 기본 정보
   id bigint primary key generated always as identity,
   serv_id varchar(20) unique not null,               -- WLF00001188 (API 고유 ID)
@@ -204,9 +195,9 @@ create index idx_benefits_updated_at on benefits(updated_at);
 -- 중복 제거 인덱스
 create index idx_benefits_hash on benefits(content_hash);
 
--- 전문검색 인덱스 (한글)
+-- 전문검색 인덱스 (한글 - simple parser 사용)
 create index idx_benefits_content_search on benefits using gin(
-  to_tsvector('korean',
+  to_tsvector('simple',
     coalesce(serv_nm, '') || ' ' ||
     coalesce(serv_dgst, '') || ' ' ||
     coalesce(target_detail, '') || ' ' ||
@@ -219,7 +210,7 @@ create index idx_benefits_content_search on benefits using gin(
 -- ============================================
 
 -- [6] 벡터 데이터 저장소
-create table benefit_embeddings (
+create table if not exists benefit_embeddings (
   id uuid primary key default uuid_generate_v4(),
   benefit_id bigint references benefits(id) on delete cascade,
   embedding vector(1024),
@@ -247,7 +238,7 @@ comment on index idx_benefit_embeddings_vector is 'HNSW 인덱스로 벡터 유�
 -- ============================================
 
 -- [7] 사용자-혜택 상호작용 로그
-create table user_benefit_interactions (
+create table if not exists user_benefit_interactions (
   id uuid primary key default uuid_generate_v4(),
   user_id uuid references users(id) on delete cascade,
   benefit_id bigint references benefits(id) on delete cascade,
@@ -265,7 +256,7 @@ create index idx_interactions_benefit on user_benefit_interactions(benefit_id, i
 create index idx_interactions_type on user_benefit_interactions(interaction_type, created_at desc);
 
 -- [8] 알림 발송 이력
-create table notification_history (
+create table if not exists notification_history (
   id uuid primary key default uuid_generate_v4(),
   user_id uuid references users(id) on delete cascade,
   benefit_id bigint references benefits(id) on delete set null,
@@ -290,7 +281,7 @@ create index idx_notifications_type on notification_history(notification_type, s
 -- ============================================
 
 -- [9] API 수집 및 동기화 로그
-create table api_sync_logs (
+create table if not exists api_sync_logs (
   id uuid primary key default uuid_generate_v4(),
   source_name text not null,
   sync_type text check (sync_type in ('API', 'CRAWL', 'MANUAL')),
@@ -310,7 +301,7 @@ create index idx_sync_logs_source on api_sync_logs(source_name, started_at desc)
 create index idx_sync_logs_status on api_sync_logs(status, started_at desc);
 
 -- [10] 온보딩 로그 테이블 (파싱 성공률 모니터링)
-create table onboarding_logs (
+create table if not exists onboarding_logs (
   id uuid primary key default uuid_generate_v4(),
   user_id uuid references users(id) on delete cascade,
   step text not null check (
@@ -387,7 +378,7 @@ comment on function generate_content_hash is '제목+내용 기반 해시 생성
 -- 하이브리드 RAG 검색 함수
 -- ============================================
 
--- [13] 하이브리드 검색 함수 (연령대 배열 기반) ⭐
+
 create or replace function search_benefits_hybrid(
   query_embedding vector(1024),
   user_ctpv_nm text,                                 -- 사용자 시도명
@@ -408,9 +399,9 @@ begin
   select 
     b.id as benefit_id,
     b.serv_id,
-    b.serv_nm as title,
-    b.content_for_embedding as content,
-    b.serv_dtl_link as original_url,
+    b.serv_nm::text as title,
+    b.content_for_embedding::text as content,
+    b.serv_dtl_link::text as original_url,
     1 - (be.embedding <=> query_embedding) as similarity
   from benefits b
   join benefit_embeddings be on b.id = be.benefit_id
@@ -419,7 +410,10 @@ begin
     and (b.enfc_end_ymd is null or b.enfc_end_ymd >= current_date)
     -- 지역 필터: 지자체(사용자 지역) OR 중앙부처(전국)
     and (
-      (b.ctpv_nm = user_ctpv_nm and b.sgg_nm = user_sgg_nm)
+      (
+        b.ctpv_nm = user_ctpv_nm 
+        and (b.sgg_nm = user_sgg_nm or b.sgg_nm is null)
+      )
       or (b.ctpv_nm is null and b.source_api = 'NATIONAL')
     )
     -- 연령대 필터: 배열 겹침 연산자 (&&) ⭐⭐⭐
@@ -432,7 +426,7 @@ begin
 end;
 $$ language plpgsql;
 
-comment on function search_benefits_hybrid is '하이브리드 RAG: SQL 필터링(지역+연령대) + 벡터 유사도 검색';
+comment on function search_benefits_hybrid(vector, text, text, text[], int) is '하이브리드 RAG: SQL 필터링(지역+연령대) + 벡터 유사도 검색';
 
 -- ============================================
 -- Row Level Security (RLS) 정책

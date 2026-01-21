@@ -63,34 +63,29 @@
 
 **목표**: 복지로 API 데이터를 Supabase에 저장
 
-#### 2.1 복지로 API 데이터 수집
+#### 2.1 복지로 API 데이터 수집 (2026-01-21 완료)
 - [x] **API 연동 완료**
   - [x] 지자체복지서비스 API 테스트
   - [x] 중앙부처복지서비스 API 테스트
   - [x] API 키 발급 및 검증
-- [ ] **데이터 수집 스크립트 작성**
-  - [ ] `scripts/data_collection/collect_local_welfare.py` 생성
-    - [ ] 목록 API 호출 (서울시 전체, 357개)
-    - [ ] 각 servId로 상세 API 호출
-    - [ ] 배열 필드 파싱 (lifeNmArray → life_nm_array)
-    - [ ] benefits 테이블 INSERT (ON CONFLICT 처리)
-  - [ ] `scripts/data_collection/collect_national_welfare.py` 생성
-    - [ ] 목록 API 호출 (전국, 365개)
-    - [ ] 각 servId로 상세 API 호출
-    - [ ] 배열 필드 파싱 (lifeArray → life_nm_array)
-    - [ ] benefits 테이블 INSERT (ON CONFLICT 처리)
-  - [ ] 공통 유틸리티 함수 작성
-    - [ ] `parse_array(value: str) -> list`
-    - [ ] `parse_date(value: str) -> date`
-    - [ ] `generate_content_for_embedding(...)` 
-- [ ] **로컬 테스트**
-  - [ ] 소량 데이터 수집 테스트 (10개)
-  - [ ] DB 저장 확인
-  - [ ] 중복 제거 로직 확인 (serv_id UNIQUE)
-- [ ] **전체 데이터 수집**
-  - [ ] 서울 지자체 복지 357개 수집
-  - [ ] 전국 중앙부처 복지 365개 수집
-  - [ ] 총 722개 데이터 저장 확인
+- [x] **데이터 수집 스크립트 작성 완료**
+  - [x] `scripts/data_collection/collect_local_welfare.py` 생성 및 검증
+    - [x] 목록 API 호출 (전국 17개 시도, 전체 데이터)
+    - [x] Soft Delete 로직 적용 (is_active 관리)
+    - [x] 배열 및 JSON 필드 파싱 구현
+  - [x] `scripts/data_collection/collect_national_welfare.py` 생성 및 검증
+    - [x] 목록 API 호출 (전국 대상)
+    - [x] V001 엔드포인트 적용 및 파라미터 수정
+    - [x] Soft Delete 로직 적용
+  - [x] 공통 이슈 해결
+    - [x] NameError (supabase, json) 수정
+    - [x] Debug URL 출력 기능 추가
+- [ ] **데이터 검증 및 분석** (Next Step)
+  - [ ] 지자체/중앙부처 API 데이터 DB 저장 확인
+  - [ ] benefit 테이블 context_hash 컬럼 사용 유무 결정
+  - [ ] 초기 적재 데이터 분석 (제공 가능한 정보량 판단)
+- [ ] **초기 적재**
+  - [ ] Local 환경에서 전체 데이터 적재 진행
 
 #### 2.2 지역코드 수집 (완료)
 - [x] 행정안전부(MOIS) API 연동 완료
@@ -98,9 +93,9 @@
 - [x] 온보딩 파싱용 검색 RPC 함수 구축
 
 **완료 기준**:
-- 722개 혜택 데이터 DB 저장 완료
-- 모든 필드 정상 매핑 확인
-- 배열 필드 (life_nm_array) 정상 저장 확인
+- 722개+ 혜택 데이터 DB 저장 완료
+- search_benefits_hybrid 함수 동작 재확인
+- 초기 적재 후 로컬/AWS 증분 적재 구현
 
 ---
 
@@ -255,6 +250,7 @@
   - [ ] last_mod_ymd 비교
   - [ ] 변경된 데이터만 업데이트
   - [ ] ON CONFLICT 처리
+  - [ ] Local & AWS 환경별 증분 적재 구현 (초기 적재 후)
 
 **완료 기준**:
 - 매일 자동 실행 확인
