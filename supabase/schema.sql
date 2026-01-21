@@ -81,7 +81,9 @@ create table users (
   region_depth int NOT NULL,
   
   gender text check (gender in ('M', 'F', 'OTHER', null)),
-  birth_year int check (birth_year between 1900 and 2100),
+  
+  -- 관심 연령대 (복수 선택 가능) ⭐ 변경됨!
+  interest_age_groups text[],                       -- ['중장년', '노년'] 형태
   
   last_region_check_at timestamp with time zone,    -- 6개월 거주지 확인
   region_update_count int default 0,                -- 지역 변경 횟수
@@ -96,52 +98,121 @@ comment on table users is '이용자 프로필 및 개인화 설정 정보';
 comment on column users.kakao_user_id is '카카오톡 채널 사용자 고유 식별자 (plusfriend_user_key)';
 comment on column users.region_code is '읍/면/동 레벨 지역코드 필수 (depth=3 or 4, 세종시는 depth=2. 예: 1168010100=역삼동, 4113510301=서현동)';
 comment on column users.region_depth is '저장된 지역코드 깊이 (2=세종시 읍/면, 3=읍/면/동, 4=구가 있는 시의 동). 애플리케이션에서 검증';
+comment on column users.interest_age_groups is '관심 연령대 배열 (예: [''중장년'', ''노년'']). API lifeNmArray와 직접 매칭';
 comment on column users.last_region_check_at is '6개월 주기 거주지 확인 알림용';
 comment on column users.region_update_count is '이상 패턴 감지용 (이사 횟수 추적)';
 
 create index idx_users_region on users(region_code) where is_active = true;
-create index idx_users_birth_year on users(birth_year) where is_active = true;
+create index idx_users_interest_ages on users using gin(interest_age_groups) where is_active = true;
 create index idx_users_active on users(is_active);
 
 -- ============================================
 -- 혜택 데이터 테이블
 -- ============================================
 
--- [5] 혜택 마스터 테이블
+-- [5] 혜택 마스터 테이블 (통합 스키마)
 create table benefits (
+  -- 기본 정보
   id bigint primary key generated always as identity,
-  title text not null,
-  category_codes text[],
+  serv_id varchar(20) unique not null,               -- WLF00001188 (API 고유 ID)
+  serv_nm varchar(500) not null,                     -- 서비스명
+  source_api varchar(20) not null                    -- 'LOCAL' (지자체) or 'NATIONAL' (중앙부처)
+    check (source_api in ('LOCAL', 'NATIONAL')),
   
-  target_age_min int,
-  target_age_max int,
-  target_gender text check (target_gender in ('M', 'F', 'ALL', null)),
-  region_codes text[],
+  -- 지역 정보 (지자체 API만, 중앙부처는 NULL)
+  ctpv_nm varchar(50),                               -- 시도명 (서울특별시)
+  sgg_nm varchar(50),                                -- 시군구명 (종로구)
   
-  content text,
-  original_url text,
+  -- 부서/기관 정보
+  dept_name varchar(200),                            -- 담당부서/주관부처
+  dept_contact varchar(100),                         -- 연락처
   
-  application_start_date date,
-  application_end_date date,
+  -- 기간 정보
+  enfc_bgng_ymd date,                                -- 시행시작일 (지자체만)
+  enfc_end_ymd date,                                 -- 시행종료일 (지자체만)
+  crtr_yr integer,                                   -- 기준연도 (중앙부처만)
+  last_mod_ymd date,                                 -- 최종수정일
   
-  source_name text,
+  -- 분류 메타데이터 (PostgreSQL 배열 타입) ⭐
+  life_array text[],                                 -- 생애주기 코드 배열
+  life_nm_array text[],                              -- 생애주기 명칭 배열 ['중장년', '노년']
+  intrs_thema_array text[],                          -- 관심주제 코드 배열
+  intrs_thema_nm_array text[],                       -- 관심주제 명칭 배열
+  trgter_indvdl_array text[],                        -- 대상자 코드 배열
+  trgter_indvdl_nm_array text[],                     -- 대상자 명칭 배열
+  sprt_cyc_nm varchar(50),                           -- 지원주기 (월, 연, 1회성)
+  srv_pvsn_nm varchar(50),                           -- 서비스제공방법 (현금지급, 현물)
+  aply_mtd_nm varchar(200),                          -- 신청방법 (방문, 온라인 등)
+  
+  -- 온라인신청 (중앙부처만)
+  onap_psblt_yn char(1),                             -- Y/N
+  
+  -- 핵심 콘텐츠 (요약)
+  serv_dgst text,                                    -- 서비스 요약
+  wlfare_info_outl_cn text,                          -- 복지정보 개요 (중앙부처만)
+  serv_dtl_link varchar(500),                        -- 상세정보 링크 (복지로)
+  
+  -- 핵심 콘텐츠 (상세) - RAG/임베딩용 ⭐⭐⭐
+  target_detail text,                                -- 지원대상 상세
+  select_criteria text,                              -- 선정기준 상세
+  service_content text,                              -- 지원내용 상세
+  apply_method_detail text,                          -- 신청방법 상세
+  
+  -- 통합 임베딩 컬럼 ⭐⭐⭐
+  content_for_embedding text,                        -- 위 4개 필드 결합 (RAG용)
+  
+  -- 부가 정보 (JSON)
+  contact_info jsonb,                                -- 문의처 정보
+  attachments jsonb,                                 -- 첨부파일 목록
+  base_laws jsonb,                                   -- 근거법령 목록
+  related_links jsonb,                               -- 관련 홈페이지 (중앙부처)
+  
+  -- 통계 및 시스템
+  inq_num integer default 0,                         -- 조회수
   is_active boolean default true,
-  content_hash text,
+  content_hash text,                                 -- 중복 제거용
   
   created_at timestamp with time zone default now(),
   updated_at timestamp with time zone default now()
 );
 
-comment on table benefits is '정부 및 지자체 시니어 혜택 통합 마스터';
-comment on column benefits.content_hash is '2단계 중복 제거 전략: 1단계 문자열 해시 비교용';
-comment on column benefits.application_end_date is '마감 임박 알림 및 자동 아카이빙 기준';
+comment on table benefits is '정부 및 지자체 복지 혜택 통합 마스터 (복지로 API 연동)';
+comment on column benefits.serv_id is 'API 서비스 고유 ID (중복 방지 키)';
+comment on column benefits.source_api is 'LOCAL=지자체복지서비스, NATIONAL=중앙부처복지서비스';
+comment on column benefits.life_nm_array is '생애주기 명칭 배열: [''중장년'', ''노년''] - 연령대 필터링 핵심!';
+comment on column benefits.content_for_embedding is 'target_detail + select_criteria + service_content + apply_method_detail 결합';
+comment on column benefits.content_hash is '2단계 중복 제거: 1단계 문자열 해시 비교용';
+comment on column benefits.enfc_end_ymd is '마감일 (NULL = 상시, 99991231 = 무기한)';
 
+-- 인덱스 생성
+create index idx_benefits_serv_id on benefits(serv_id);
+create index idx_benefits_source_api on benefits(source_api);
 create index idx_benefits_active on benefits(is_active) where is_active = true;
-create index idx_benefits_region on benefits using gin(region_codes);
-create index idx_benefits_category on benefits using gin(category_codes);
-create index idx_benefits_dates on benefits(application_end_date) where is_active = true;
+
+-- 지역 검색 인덱스
+create index idx_benefits_region on benefits(ctpv_nm, sgg_nm) where ctpv_nm is not null;
+
+-- 배열 검색을 위한 GIN 인덱스 (연령대 필터링 핵심!) ⭐
+create index idx_benefits_life_array on benefits using gin(life_nm_array);
+create index idx_benefits_intrs_thema on benefits using gin(intrs_thema_nm_array);
+create index idx_benefits_trgter on benefits using gin(trgter_indvdl_nm_array);
+
+-- 기간 검색 인덱스
+create index idx_benefits_dates on benefits(enfc_end_ymd) where is_active = true;
+create index idx_benefits_updated_at on benefits(updated_at);
+
+-- 중복 제거 인덱스
 create index idx_benefits_hash on benefits(content_hash);
-create index idx_benefits_source on benefits(source_name);
+
+-- 전문검색 인덱스 (한글)
+create index idx_benefits_content_search on benefits using gin(
+  to_tsvector('korean',
+    coalesce(serv_nm, '') || ' ' ||
+    coalesce(serv_dgst, '') || ' ' ||
+    coalesce(target_detail, '') || ' ' ||
+    coalesce(service_content, '')
+  )
+);
 
 -- ============================================
 -- AI/RAG 데이터 테이블
@@ -243,7 +314,7 @@ create table onboarding_logs (
   id uuid primary key default uuid_generate_v4(),
   user_id uuid references users(id) on delete cascade,
   step text not null check (
-    step in ('REGION_INPUT', 'REGION_CONFIRM', 'BIRTH_INPUT', 'ONBOARDING_COMPLETE')
+    step in ('REGION_INPUT', 'REGION_CONFIRM', 'AGE_GROUP_SELECT', 'ONBOARDING_COMPLETE')
   ),
   input_text text,              -- 사용자 입력값
   parse_method text check (
@@ -251,13 +322,15 @@ create table onboarding_logs (
   ),
   parse_success boolean,        -- 파싱 성공 여부
   parsed_region_code varchar(10) references regions(region_code),
+  selected_age_groups text[],   -- 선택된 연령대 배열 ⭐
   attempt_count int default 1,  -- 재시도 횟수
   created_at timestamp with time zone default now()
 );
 
 comment on table onboarding_logs is '온보딩 프로세스 모니터링 및 파싱 성공률 분석용';
-comment on column onboarding_logs.step is 'REGION_INPUT: 지역 입력, REGION_CONFIRM: 확인, BIRTH_INPUT: 출생연도, ONBOARDING_COMPLETE: 완료';
+comment on column onboarding_logs.step is 'REGION_INPUT: 지역 입력, REGION_CONFIRM: 확인, AGE_GROUP_SELECT: 관심 연령대 선택, ONBOARDING_COMPLETE: 완료';
 comment on column onboarding_logs.parse_method is 'REGEX: 정규식, LLM: AI파싱, BUTTON_SELECT: 버튼선택, MANUAL_SELECT: 수동선택';
+comment on column onboarding_logs.selected_age_groups is '사용자가 선택한 관심 연령대 (예: [''중장년'', ''노년''])';
 
 create index idx_onboarding_user on onboarding_logs(user_id, created_at desc);
 create index idx_onboarding_step on onboarding_logs(step, created_at desc);
@@ -291,12 +364,14 @@ returns void as $$
 begin
   update benefits
   set is_active = false
-  where application_end_date < current_date
+  where enfc_end_ymd < current_date
+    and enfc_end_ymd is not null
+    and enfc_end_ymd != '9999-12-31'::date  -- 무기한 제외
     and is_active = true;
 end;
 $$ language plpgsql;
 
-comment on function deactivate_expired_benefits is '매일 실행: 마감일 지난 혜택 자동 아카이빙 (3개월 후 삭제)';
+comment on function deactivate_expired_benefits is '매일 실행: 시행종료일 지난 혜택 자동 아카이빙 (무기한 99991231 제외)';
 
 -- [12] 중복 제거용 해시 생성 함수
 create or replace function generate_content_hash(p_title text, p_content text)
@@ -312,16 +387,17 @@ comment on function generate_content_hash is '제목+내용 기반 해시 생성
 -- 하이브리드 RAG 검색 함수
 -- ============================================
 
--- [13] 하이브리드 검색 함수
+-- [13] 하이브리드 검색 함수 (연령대 배열 기반) ⭐
 create or replace function search_benefits_hybrid(
   query_embedding vector(1024),
-  user_region text,
-  user_age int,
-  user_gender text,
+  user_ctpv_nm text,                                 -- 사용자 시도명
+  user_sgg_nm text,                                  -- 사용자 시군구명
+  user_interest_ages text[],                         -- 사용자 관심 연령대 배열
   limit_count int default 5
 )
 returns table (
   benefit_id bigint,
+  serv_id varchar(20),
   title text,
   content text,
   original_url text,
@@ -331,24 +407,32 @@ begin
   return query
   select 
     b.id as benefit_id,
-    b.title,
-    b.content,
-    b.original_url,
+    b.serv_id,
+    b.serv_nm as title,
+    b.content_for_embedding as content,
+    b.serv_dtl_link as original_url,
     1 - (be.embedding <=> query_embedding) as similarity
   from benefits b
   join benefit_embeddings be on b.id = be.benefit_id
   where b.is_active = true
-    and (b.application_end_date is null or b.application_end_date >= current_date)
-    and (user_region = any(b.region_codes) or 'ALL' = any(b.region_codes))
-    and (b.target_age_min is null or b.target_age_min <= user_age)
-    and (b.target_age_max is null or b.target_age_max >= user_age)
-    and (b.target_gender is null or b.target_gender in ('ALL', user_gender))
+    -- 유효기간 체크
+    and (b.enfc_end_ymd is null or b.enfc_end_ymd >= current_date)
+    -- 지역 필터: 지자체(사용자 지역) OR 중앙부처(전국)
+    and (
+      (b.ctpv_nm = user_ctpv_nm and b.sgg_nm = user_sgg_nm)
+      or (b.ctpv_nm is null and b.source_api = 'NATIONAL')
+    )
+    -- 연령대 필터: 배열 겹침 연산자 (&&) ⭐⭐⭐
+    and (
+      b.life_nm_array is null 
+      or b.life_nm_array && user_interest_ages
+    )
   order by be.embedding <=> query_embedding
   limit limit_count;
 end;
 $$ language plpgsql;
 
-comment on function search_benefits_hybrid is '하이브리드 RAG: SQL 필터링 + 벡터 유사도 검색';
+comment on function search_benefits_hybrid is '하이브리드 RAG: SQL 필터링(지역+연령대) + 벡터 유사도 검색';
 
 -- ============================================
 -- Row Level Security (RLS) 정책
@@ -400,13 +484,22 @@ begin
   raise notice '✅ 똑순이 데이터베이스 스키마 설치 완료!';
   raise notice '📊 생성된 테이블: 10개';
   raise notice '  - regions (지역코드 마스터, depth 1-4 계층)';
-  raise notice '  - users (시/군/구 레벨 저장, depth=2)';
+  raise notice '  - users (관심 연령대 배열 필드 추가)';
+  raise notice '  - benefits (통합 스키마: 지자체+중앙부처 API)';
+  raise notice '  - benefit_embeddings (RAG 벡터 저장소)';
   raise notice '  - onboarding_logs (파싱 성공률 모니터링)';
   raise notice '🔧 생성된 함수: 4개';
+  raise notice '  - search_benefits_hybrid (하이브리드 RAG 검색)';
+  raise notice '  - deactivate_expired_benefits (만료 혜택 정리)';
   raise notice '🔐 RLS 정책: 4개';
   raise notice '';
+  raise notice '⭐ 주요 변경사항:';
+  raise notice '  - 연령 필터링: birth_year → interest_age_groups 배열';
+  raise notice '  - benefits 테이블: API 통합 스키마 (life_nm_array 배열)';
+  raise notice '  - 하이브리드 RAG: 지역 + 연령대 배열 필터링';
+  raise notice '';
   raise notice '다음 단계:';
-  raise notice '1. 행정안전부 API 키 발급';
-  raise notice '2. 지역코드 데이터 수집 (분기 1회)';
-  raise notice '3. 온보딩 파싱 로직 구현 (정규식 + LLM + 버튼)';
+  raise notice '1. 복지로 API 키 발급 (지자체+중앙부처)';
+  raise notice '2. 데이터 수집 스크립트 작성 (서울 357개 + 전국 365개)';
+  raise notice '3. 온보딩 챗봇 구현 (지역 + 연령대 선택)';
 end $$;
