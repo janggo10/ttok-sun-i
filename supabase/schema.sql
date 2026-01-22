@@ -410,6 +410,7 @@ begin
   where b.is_active = true
     -- 유효기간 체크
     and (b.enfc_end_ymd is null or b.enfc_end_ymd >= current_date)
+    and (b.enfc_bgng_ymd is null or b.enfc_bgng_ymd <= current_date)
     -- 지역 필터: 지자체(사용자 지역) OR 중앙부처(전국)
     and (
       (

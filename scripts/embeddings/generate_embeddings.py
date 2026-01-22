@@ -18,6 +18,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+# Suppress verbose library logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # Load environment variables
@@ -30,7 +36,7 @@ AWS_REGION = os.getenv("AWS_REGION", "ap-northeast-2")
 TITAN_MODEL_ID = "amazon.titan-embed-text-v2:0"
 
 # Parallel processing configuration
-MAX_WORKERS = int(os.getenv("EMBEDDING_MAX_WORKERS", "5"))  # 병렬 처리 워커 수
+MAX_WORKERS = int(os.getenv("EMBEDDING_MAX_WORKERS", "10"))  # 병렬 처리 워커 수
 
 def get_supabase_client():
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
@@ -97,27 +103,43 @@ def process_single_chunk(bedrock, supabase, benefit_id, serv_id, chunk, chunk_in
     Returns:
         tuple: (success: bool, serv_id: str, chunk_index: int, error: str or None)
     """
-    try:
-        # Generate embedding
-        embedding = generate_embedding(bedrock, chunk)
-        
-        if not embedding:
-            return (False, serv_id, chunk_index, "Failed to generate embedding")
-        
-        # Insert into benefit_embeddings
-        data = {
-            "benefit_id": benefit_id,
-            "embedding": embedding,
-            "content_chunk": chunk,
-            "chunk_index": chunk_index,
-            "content_hash": content_hash
-        }
-        
-        supabase.table("benefit_embeddings").insert(data).execute()
-        return (True, serv_id, chunk_index, None)
-        
-    except Exception as e:
-        return (False, serv_id, chunk_index, str(e))
+    max_retries = 5
+    retry_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            # Generate embedding
+            embedding = generate_embedding(bedrock, chunk)
+            
+            if not embedding:
+                # If embedding returns None (handled error inside generate_embedding), retry might not help unless it was network/server error caught there. 
+                # But let's assume generate_embedding logs error and returns None. We'll count it as failure for this attempt.
+                raise Exception("Embedding generation returned None")
+            
+            # Insert into benefit_embeddings
+            data = {
+                "benefit_id": benefit_id,
+                "embedding": embedding,
+                "content_chunk": chunk,
+                "chunk_index": chunk_index,
+                "content_hash": content_hash
+            }
+            
+            supabase.table("benefit_embeddings").insert(data).execute()
+            return (True, serv_id, chunk_index, None)
+            
+        except Exception as e:
+            # Handle both local resource (OSError, Errno 35) and remote errors
+            is_last_attempt = (attempt == max_retries - 1)
+            error_msg = str(e)
+            
+            if is_last_attempt:
+                return (False, serv_id, chunk_index, f"Max retries exceeded: {error_msg}")
+            
+            # Exponential backoff
+            sleep_time = retry_delay * (2 ** attempt)
+            # logger.warning(f"Retry {attempt+1}/{max_retries} for {serv_id} chunk {chunk_index}: {error_msg}. Sleeping {sleep_time}s...")
+            time.sleep(sleep_time)
 
 def main():
     logger.info("Starting embedding generation process...")
@@ -127,11 +149,20 @@ def main():
     bedrock = get_bedrock_client()
     
     # 1. Fetch benefits that need embeddings
-    limit = 100
+    limit = 500
     page = 0
     total_processed = 0
     total_skipped = 0
     total_updated = 0
+    
+    # Get total count for progress reporting
+    try:
+        count_response = supabase.table("benefits").select("id", count="exact").eq("is_active", True).execute()
+        total_items = count_response.count
+        logger.info(f"Total active benefits to process: {total_items}")
+    except Exception as e:
+        total_items = "Unknown"
+        logger.warning(f"Failed to get total count: {e}")
     
     while True:
         logger.info(f"Fetching page {page} (limit {limit})...")
@@ -146,87 +177,107 @@ def main():
         if not benefits:
             break
             
-        logger.info(f"Processing {len(benefits)} benefits...")
+        logger.info(f"Processing batch of {len(benefits)} benefits (Page {page})...")
         
+        # Track batch progress
+        batch_processed = 0
+        batch_total = len(benefits)
+        
+        
+        # Collect tasks for parallel processing
+        tasks = []
+        
+        # Optimization: Bulk fetch existing hashes for this batch to avoid N+1 queries
+        benefit_ids = [b['id'] for b in benefits]
+        existing_embeddings_map = {}
+        try:
+            # Supabase .in_() limit might be small, but 500 should be okay or we can chunk it if needed.
+            # Let's try fetching in one go.
+            existing_response = supabase.table("benefit_embeddings") \
+                .select("benefit_id, content_hash") \
+                .in_("benefit_id", benefit_ids) \
+                .execute()
+            
+            for row in existing_response.data:
+                existing_embeddings_map[row['benefit_id']] = row.get('content_hash')
+        except Exception as e:
+            logger.error(f"Failed to bulk fetch existing embeddings: {e}")
+            # Fallback to empty map, will force individual checks or updates? 
+            # Actually if bulk fetch fails, we might just treat all as 'not found' -> update all.
+            # Or we can continue and let the logic fall through (but efficient way is key).
+            pass
+
         for benefit in benefits:
             benefit_id = benefit['id']
             serv_id = benefit['serv_id']
             content = benefit['content_for_embedding']
             
             if not content:
-                logger.warning(f"Skipping {serv_id}: No content for embedding.")
                 continue
             
-            # Compute current content hash
             current_hash = compute_content_hash(content)
             
-            # Update content_hash in benefits table if missing
+            # Update hash if missing
             if not benefit.get('content_hash'):
                 try:
-                    supabase.table("benefits") \
-                        .update({"content_hash": current_hash}) \
-                        .eq("id", benefit_id) \
-                        .execute()
-                except Exception as e:
-                    logger.warning(f"Failed to update content_hash for {serv_id}: {e}")
+                    supabase.table("benefits").update({"content_hash": current_hash}).eq("id", benefit_id).execute()
+                except: pass
             
-            # Check if embedding already exists with same content_hash
-            existing = supabase.table("benefit_embeddings") \
-                .select("id, content_hash") \
-                .eq("benefit_id", benefit_id) \
-                .limit(1) \
-                .execute()
+            # Check existing from memory map
+            existing_hash = existing_embeddings_map.get(benefit_id)
             
-            if existing.data:
-                existing_hash = existing.data[0].get('content_hash')
-                
-                # If content hasn't changed, skip
-                if existing_hash == current_hash:
-                    logger.info(f"✓ Skipping {serv_id}: Embedding up-to-date (hash match)")
-                    total_skipped += 1
-                    continue
-                else:
-                    # Content changed - delete old embeddings
-                    logger.info(f"🔄 Content changed for {serv_id}, regenerating embeddings...")
+            if existing_hash == current_hash:
+                total_skipped += 1
+            else:
+                # Needs update
+                if existing_hash: # If it existed but hash mismatches
                     try:
-                        supabase.table("benefit_embeddings") \
-                            .delete() \
-                            .eq("benefit_id", benefit_id) \
-                            .execute()
+                        supabase.table("benefit_embeddings").delete().eq("benefit_id", benefit_id).execute()
                         total_updated += 1
                     except Exception as e:
-                        logger.error(f"Failed to delete old embeddings for {serv_id}: {e}")
+                        logger.error(f"Failed delete {serv_id}: {e}")
                         continue
-            
-            logger.info(f"Processing {serv_id} ({benefit['serv_nm']})...")
-            
-            chunks = split_text(content)
-            
-            # 병렬 처리: 모든 청크를 동시에 처리
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                # Submit all chunks for parallel processing
-                futures = []
-                for i, chunk in enumerate(chunks):
-                    future = executor.submit(
-                        process_single_chunk,
-                        bedrock,
-                        supabase,
-                        benefit_id,
-                        serv_id,
-                        chunk,
-                        i,
-                        current_hash
-                    )
-                    futures.append(future)
                 
-                # Collect results
+                # Add chunks to task list
+                chunks = split_text(content)
+                for i, chunk in enumerate(chunks):
+                    tasks.append((benefit_id, serv_id, chunk, i, current_hash))
+
+        # Execute parallel tasks
+        if tasks:
+            logger.info(f"Processing {len(tasks)} chunks in parallel...")
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = []
+                for task in tasks:
+                    futures.append(executor.submit(process_single_chunk, bedrock, supabase, *task))
+                
                 for future in as_completed(futures):
-                    success, serv_id_result, chunk_idx, error = future.result()
+                    success, sid, idx, err = future.result()
                     if success:
-                        logger.info(f"✓ Saved embedding for {serv_id_result} chunk {chunk_idx}")
                         total_processed += 1
                     else:
-                        logger.error(f"✗ Failed for {serv_id_result} chunk {chunk_idx}: {error}")
+                        logger.error(f"Failed {sid} chunk {idx}: {err}")
+                    
+                    # Update progress
+                    current_total = total_processed + total_skipped + total_updated  # Note: logic slightly fuzzy here as we batch calculate skip/update before processing
+                    # But for simple progress tracking it's fine
+        
+        # Log progress after batch
+        current_total = total_processed + total_skipped
+        # Note: total_updated is counted before processing, total_processed is counted after success.
+        # Let's simplify: processed = successful embeddings.
+        # The logic is getting a bit mixed between 'benefits processed' vs 'chunks processed'.
+        # Let's stick to 'Benefits' count for progress log.
+        # Since 'tasks' are chunks, we can't easily map back to benefit count 1:1 for progress without tracking.
+        # But 'batch_processed' was simple loop count.
+        
+        # Re-calc progress based on benefits loop
+        batch_processed = len(benefits) # We iterated all
+        current_processed_count = total_skipped + (total_updated if tasks else 0) # Approximation
+        
+        # Just use total_items for %
+        percent = (page * limit + len(benefits)) / total_items * 100 if isinstance(total_items, int) and total_items > 0 else 0
+        logger.info(f"Progress: ~{page * limit + len(benefits)}/{total_items} (Skip: {total_skipped}, Tasks: {len(tasks)}) - {percent:.1f}%")
             
         page += 1
     

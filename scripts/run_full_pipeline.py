@@ -37,19 +37,7 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import slack notifier
-try:
-    from scripts.utils.slack_notifier import send_success_notification, send_error_notification, send_pipeline_summary
-    SLACK_ENABLED = True
-except ImportError:
-    logger.warning("Slack notifier not available. Notifications will be skipped.")
-    SLACK_ENABLED = False
-    def send_success_notification(*args, **kwargs):
-        pass
-    def send_error_notification(*args, **kwargs):
-        pass
-    def send_pipeline_summary(*args, **kwargs):
-        pass
+
 
 # Script paths
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -68,22 +56,34 @@ def run_script(script_path, script_name):
     start_time = time.time()
     
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [sys.executable, script_path],
-            check=True,
-            capture_output=True,
-            text=True
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # Merge stderr into stdout
+            text=True,
+            bufsize=1  # Line buffered
         )
         
-        # Print output
-        if result.stdout:
-            print(result.stdout)
+        captured_stdout = []
+        
+        # Read output line by line and print immediately
+        for line in process.stdout:
+            print(line, end='')  # Output already has newlines
+            captured_stdout.append(line)
+            
+        process.wait()
+        
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, [sys.executable, script_path])
+        
+        # Combine captured output for parsing
+        full_output = "".join(captured_stdout)
         
         # Parse result from stdout
         result_data = {}
-        if result.stdout:
+        if full_output:
             # Look for __PIPELINE_RESULT__:{json}
-            match = re.search(r'__PIPELINE_RESULT__:(\{.*?\})', result.stdout)
+            match = re.search(r'__PIPELINE_RESULT__:(\{.*?\})', full_output)
             if match:
                 try:
                     result_data = json.loads(match.group(1))
@@ -94,10 +94,10 @@ def run_script(script_path, script_name):
         logger.info(f"✅ Completed: {script_name} (took {elapsed:.1f}s)")
         return True, result_data
         
-    except subprocess.CalledProcessError as e:
+    except subprocess.CalledProcessError:
         elapsed = time.time() - start_time
         logger.error(f"❌ Failed: {script_name} (after {elapsed:.1f}s)")
-        logger.error(f"Error output:\n{e.stderr}")
+        # Output is already printed via the loop
         return False, {}
     except Exception as e:
         elapsed = time.time() - start_time
@@ -129,20 +129,8 @@ def main():
         results["national"] = success
         stats["national"] = data
         
-        if success and SLACK_ENABLED:
-            send_success_notification(
-                title="중앙부처 복지 데이터 수집 완료",
-                message="중앙부처 복지 데이터 수집이 성공적으로 완료되었습니다.",
-                stats=data
-            )
-        elif not success:
+        if not success:
             logger.error("⚠️  중앙부처 데이터 수집 실패. 계속 진행합니다...")
-            if SLACK_ENABLED:
-                send_error_notification(
-                    title="중앙부처 데이터 수집 실패",
-                    error_message="중앙부처 복지 데이터 수집 중 오류가 발생했습니다.",
-                    stats=data
-                )
     else:
         logger.info("⏭️  Skipping: 중앙부처 복지 데이터 수집")
         results["national"] = None
@@ -154,20 +142,8 @@ def main():
         results["local"] = success
         stats["local"] = data
         
-        if success and SLACK_ENABLED:
-            send_success_notification(
-                title="지자체 복지 데이터 수집 완료",
-                message="지자체 복지 데이터 수집이 성공적으로 완료되었습니다.",
-                stats=data
-            )
-        elif not success:
+        if not success:
             logger.error("⚠️  지자체 데이터 수집 실패. 계속 진행합니다...")
-            if SLACK_ENABLED:
-                send_error_notification(
-                    title="지자체 데이터 수집 실패",
-                    error_message="지자체 복지 데이터 수집 중 오류가 발생했습니다.",
-                    stats=data
-                )
     else:
         logger.info("⏭️  Skipping: 지자체 복지 데이터 수집")
         results["local"] = None
@@ -175,26 +151,15 @@ def main():
     
     # Step 3: Embedding Generation
     if not args.skip_embedding:
-        # Only run embeddings if at least one collection succeeded
-        if results.get("national") or results.get("local"):
+        # Only run embeddings if collections didn't fail (they can be skipped)
+        if (results.get("national") is not False) and (results.get("local") is not False):
             success, data = run_script(EMBEDDING_SCRIPT, "임베딩 생성")
             results["embedding"] = success
             stats["embedding"] = data
             
-            if success and SLACK_ENABLED:
-                send_success_notification(
-                    title="임베딩 생성 완료",
-                    message="벡터 임베딩 생성이 성공적으로 완료되었습니다.",
-                    stats=data
-                )
-            elif not success and SLACK_ENABLED:
-                send_error_notification(
-                    title="임베딩 생성 실패",
-                    error_message="벡터 임베딩 생성 중 오류가 발생했습니다.",
-                    stats=data
-                )
+
         else:
-            logger.warning("⚠️  데이터 수집이 모두 실패하여 임베딩 생성을 스킵합니다.")
+            logger.warning("⚠️  데이터 수집이 실패하여 안전을 위해 임베딩 생성을 스킵합니다.")
             results["embedding"] = False
             stats["embedding"] = {}
     else:
@@ -250,13 +215,7 @@ def main():
     else:
         logger.info(f"  임베딩 생성:   ❌ Failed")
     
-    # Send pipeline summary to Slack
-    if SLACK_ENABLED:
-        send_pipeline_summary(
-            total_time=pipeline_elapsed,
-            results=results,
-            stats=stats
-        )
+
     
     # Exit code
     all_success = all(v is not False for v in results.values())
