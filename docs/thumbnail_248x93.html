@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>또그쎤이 - 썸네일 (248x93)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #f0f0f0;
+            font-family: 'Noto Sans KR', sans-serif;
+        }
+        .thumbnail {
+            width: 248px;
+            height: 93px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            position: relative;
+            overflow: hidden;
+        }
+        .thumbnail::before {
+            content: '';
+            position: absolute;
+            width: 100px;
+            height: 100px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 50%;
+            top: -30px;
+            right: -20px;
+        }
+        .content {
+            text-align: center;
+            z-index: 1;
+        }
+        .logo {
+            font-size: 28px;
+            font-weight: 800;
+            color: white;
+            margin-bottom: 2px;
+            letter-spacing: -1px;
+        }
+        .tagline {
+            font-size: 10px;
+            color: rgba(255,255,255,0.9);
+            font-weight: 500;
+        }
+        .instructions {
+            margin-top: 30px;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            max-width: 400px;
+        }
+        .instructions h3 {
+            margin-top: 0;
+            color: #667eea;
+        }
+        .instructions ol {
+            padding-left: 20px;
+        }
+        .instructions li {
+            margin: 8px 0;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="thumbnail">
+        <div class="content">
+            <div class="logo">또그쎤이</div>
+            <div class="tagline">AI 맞춤형 복지혜택 추천</div>
+        </div>
+    </div>
+
+    <div class="instructions">
+        <h3>📸 스크린샷 방법</h3>
+        <ol>
+            <li>위의 보라색 박스만 캡처하세요</li>
+            <li><strong>Mac:</strong> Cmd + Shift + 4 → 영역 선택</li>
+            <li><strong>Windows:</strong> Win + Shift + S → 영역 선택</li>
+            <li>정확히 <strong>248 x 93 픽셀</strong>로 캡처</li>
+            <li>파일명: <code>ttok-sun-i-thumbnail.png</code></li>
+        </ol>
+    </div>
+</body>
+</html>
+

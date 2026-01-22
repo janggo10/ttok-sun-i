@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>또그쎤이 - 카카오톡 챗봇 화면</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 40px;
+            background: #f5f5f5;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+        }
+        .phone-frame {
+            width: 375px;
+            background: white;
+            border-radius: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+        .status-bar {
+            height: 44px;
+            background: #f8f8f8;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            font-size: 14px;
+        }
+        .chat-header {
+            background: #fae100;
+            padding: 15px;
+            display: flex;
+            align-items: center;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .bot-icon {
+            width: 40px;
+            height: 40px;
+            background: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            margin-right: 12px;
+        }
+        .bot-name {
+            font-weight: 600;
+            font-size: 16px;
+        }
+        .chat-body {
+            height: 600px;
+            background: #b2c7d9;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .message {
+            margin-bottom: 15px;
+            display: flex;
+        }
+        .message.bot {
+            justify-content: flex-start;
+        }
+        .message.user {
+            justify-content: flex-end;
+        }
+        .bubble {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            font-size: 15px;
+            line-height: 1.5;
+        }
+        .message.bot .bubble {
+            background: white;
+            border-bottom-left-radius: 4px;
+        }
+        .message.user .bubble {
+            background: #fae100;
+            border-bottom-right-radius: 4px;
+        }
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .card-title {
+            font-weight: 600;
+            font-size: 16px;
+            margin-bottom: 8px;
+            color: #333;
+        }
+        .card-info {
+            font-size: 13px;
+            color: #666;
+            line-height: 1.6;
+        }
+        .card-tag {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            margin-right: 6px;
+            margin-top: 8px;
+        }
+        .button-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .btn {
+            flex: 1;
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        .btn-secondary {
+            background: #f0f0f0;
+            color: #333;
+        }
+        .time {
+            font-size: 11px;
+            color: #999;
+            margin-top: 4px;
+        }
+        .instructions {
+            margin-left: 40px;
+            padding: 30px;
+            background: white;
+            border-radius: 12px;
+            max-width: 400px;
+        }
+        .instructions h3 {
+            margin-top: 0;
+            color: #667eea;
+        }
+        .instructions p {
+            line-height: 1.8;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="phone-frame">
+        <div class="status-bar">
+            <span>9:41</span>
+            <span>📶 📶 📶 🔋</span>
+        </div>
+        <div class="chat-header">
+            <div class="bot-icon">🎁</div>
+            <div class="bot-name">또그쎤이</div>
+        </div>
+        <div class="chat-body">
+            <div class="message bot">
+                <div>
+                    <div class="bubble">
+                        안녕하세요! 또그쎤이입니다 😊<br>
+                        받을 수 있는 복지혜택을 찾아드릴게요!
+                    </div>
+                </div>
+            </div>
+            
+            <div class="message user">
+                <div>
+                    <div class="bubble">
+                        서울 강남구에 사는 30대인데<br>
+                        출산 관련 지원 있나요?
+                    </div>
+                </div>
+            </div>
+            
+            <div class="message bot">
+                <div>
+                    <div class="bubble">
+                        네! 강남구 30대분께 맞는<br>
+                        출산 지원 혜택을 찾았어요 🎯
+                    </div>
+                    <div class="card">
+                        <div class="card-title">✨ 첫만남 이용권</div>
+                        <div class="card-info">
+                            📍 대상: 2024년 이후 출생아<br>
+                            💰 지원: 첫째 200만원, 둘째 이상 200만원<br>
+                            📅 신청: 출생일로부터 2년 이내
+                        </div>
+                        <div>
+                            <span class="card-tag">임신·출산</span>
+                            <span class="card-tag">현금</span>
+                        </div>
+                        <div class="button-group">
+                            <div class="btn btn-primary">상세보기</div>
+                            <div class="btn btn-secondary">신청방법</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">✨ 강남구 출산장려금</div>
+                        <div class="card-info">
+                            📍 대상: 강남구 1년 이상 거주<br>
+                            💰 지원: 첫째 100만원, 둘째 300만원<br>
+                            📞 문의: 강남구청 출산지원과
+                        </div>
+                        <div>
+                            <span class="card-tag">지역복지</span>
+                            <span class="card-tag">강남구</span>
+                        </div>
+                        <div class="button-group">
+                            <div class="btn btn-primary">상세보기</div>
+                            <div class="btn btn-secondary">신청방법</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="message user">
+                <div>
+                    <div class="bubble">
+                        좋네요! 어떻게 신청하나요?
+                    </div>
+                </div>
+            </div>
+            
+            <div class="message bot">
+                <div>
+                    <div class="bubble">
+                        복지로 웹사이트나 앱에서<br>
+                        간편하게 신청하실 수 있어요!<br><br>
+                        더 궁금한 사항은<br>
+                        보건복지상담센터 ☎️ 129로<br>
+                        문의하시면 됩니다 😊
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="instructions">
+        <h3>📸 스크린샷 가이드</h3>
+        <p>
+            <strong>화면 설명:</strong><br>
+            카카오톡 챗봇을 통한 맞춤형 복지 추천 대화 화면입니다.
+        </p>
+        <p>
+            <strong>캡처 방법:</strong><br>
+            1. 왼쪽 스마트폰 화면 전체 캡처<br>
+            2. 또는 대화 내용 중심으로 캡처<br>
+            3. 파일명: <code>service_screen_kakao.png</code>
+        </p>
+        <p>
+            <strong>주요 기능:</strong><br>
+            ✅ 자연어 질의응답<br>
+            ✅ 지역/연령 맞춤 추천<br>
+            ✅ 카드형 혜택 안내<br>
+            ✅ 상세보기/신청방법 연계
+        </p>
+    </div>
+</body>
+</html>
+
