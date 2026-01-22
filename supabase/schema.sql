@@ -216,12 +216,14 @@ create table if not exists benefit_embeddings (
   embedding vector(1024),
   content_chunk text,
   chunk_index int default 0,
+  content_hash text,                             -- 변경 감지용 (content_for_embedding의 hash)
   created_at timestamp with time zone default now()
 );
 
 comment on table benefit_embeddings is '문맥 검색을 위한 혜택 상세 내용의 벡터 데이터';
 comment on column benefit_embeddings.embedding is 'AWS Bedrock Titan Embeddings V2 모델 사용';
 comment on column benefit_embeddings.chunk_index is '긴 공고문 분할 시 원본 순서 보존';
+comment on column benefit_embeddings.content_hash is '변경 감지: content_for_embedding의 SHA256 hash (임베딩 재생성 여부 판단용)';
 
 -- HNSW 인덱스 (벡터 검색 성능 최적화)
 create index idx_benefit_embeddings_vector 

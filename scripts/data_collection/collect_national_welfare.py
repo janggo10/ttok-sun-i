@@ -4,6 +4,7 @@ import requests
 import xml.etree.ElementTree as ET
 import logging
 import time
+import hashlib
 from dotenv import load_dotenv
 from supabase import create_client
 import json
@@ -21,10 +22,10 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-# Configuration
-BOKJIRO_API_KEY =  "82b26bbf4c159c48aeb0570892efdce9d3438cf0acf78b2cffd055952bd2ddba"
-SUPABASE_URL = "https://ladqubaousblucmrqcrr.supabase.co"
-SUPABASE_SERVICE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhZHF1YmFvdXNibHVjbXJxY3JyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2ODgyNDI1MiwiZXhwIjoyMDg0NDAwMjUyfQ.YZfsje16TIRzEKI9N6WgH-49XH-VPqLJwqwp4LlwhxY"
+# Configuration - Load from .env file
+BOKJIRO_API_KEY = os.getenv("BOKJIRO_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 
 # API Endpoints
@@ -45,7 +46,7 @@ def safe_find_text(element, tag):
     found = element.find(tag)
     return found.text.strip() if found is not None and found.text else None
 
-def fetch_national_welfare_list(page_no=1, num_of_rows=50):
+def fetch_national_welfare_list(page_no=1, num_of_rows=1000):
     params = {
         "serviceKey": BOKJIRO_API_KEY,
         "numOfRows": num_of_rows,
@@ -133,6 +134,12 @@ def format_date(date_str):
         return f"{clean[:4]}-{clean[4:6]}-{clean[6:]}"
     return None
 
+def compute_content_hash(text):
+    """Generate SHA256 hash of content for embedding change detection"""
+    if not text:
+        return None
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
 def main():
     logger.info("Starting National Welfare Data Collection...")
     
@@ -155,16 +162,22 @@ def main():
         return
 
     # Step 2: Fetch and Update (Mark active if found)
-    # Processing pages (National API usually has ~370 items, 100 per page = 4 pages)
-    for page in range(1, 100): 
+    # Processing pages - continue until no more data
+    total_items_fetched = 0
+    total_success = 0
+    total_failed = 0
+    
+    page = 1
+    while True:
         logger.info(f"Fetching page {page}...")
-        items = fetch_national_welfare_list(page_no=page, num_of_rows=100)
+        items = fetch_national_welfare_list(page_no=page, num_of_rows=1000)
         
         if not items:
-            logger.info("No more items found or error occurred.")
+            logger.info(f"No more items found. Completed at page {page}.")
             break
             
         logger.info(f"Found {len(items)} items on page {page}.")
+        total_items_fetched += len(items)
         
         success_count = 0
         for item in items:
@@ -180,22 +193,29 @@ def main():
             
             # Contact & Dept Info
             dept_contact = safe_find_text(item, 'rprsCtadr')
-            dept_name = safe_find_text(item, 'jurMnofNm') # Ministry name
+            dept_name = safe_find_text(item, 'jurMnofNm')  # Ministry name (e.g., 보건복지부)
+            dept_org = safe_find_text(item, 'jurOrgNm')     # Department name (e.g., 출산정책과)
+            
+            # 부처명 + 부서명 조합 (둘 다 있으면)
+            if dept_name and dept_org:
+                dept_name = f"{dept_name} {dept_org}"
             
             # Metadata
             inq_num = int(safe_find_text(item, 'inqNum') or 0)
             onap_psblt_yn = safe_find_text(item, 'onapPsbltYn')
             
+            # Service metadata (목록 API에도 있음)
+            sprt_cyc_nm = safe_find_text(item, 'sprtCycNm')      # 1회성, 월 등
+            srv_pvsn_nm = safe_find_text(item, 'srvPvsnNm')      # 현지비지원(바우처) 등
+            
             # Arrays (Comma separated strings in XML)
             def parse_array(val):
                 return [x.strip() for x in val.split(',')] if val else []
 
-            life_array = parse_array(safe_find_text(item, 'lifeArray'))
-            life_nm_array = parse_array(safe_find_text(item, 'lifeNmArray'))
-            intrs_thema_array = parse_array(safe_find_text(item, 'intrsThemaArray'))
-            intrs_thema_nm_array = parse_array(safe_find_text(item, 'intrsThemaNmArray'))
-            trgter_indvdl_array = parse_array(safe_find_text(item, 'trgterIndvdlArray'))
-            trgter_indvdl_nm_array = parse_array(safe_find_text(item, 'trgterIndvdlNmArray'))
+            # 주의: lifeArray에 이름이 들어있음 (코드 아님)
+            life_nm_array = parse_array(safe_find_text(item, 'lifeArray'))
+            intrs_thema_nm_array = parse_array(safe_find_text(item, 'intrsThemaArray'))
+            trgter_indvdl_nm_array = parse_array(safe_find_text(item, 'trgterIndvdlArray'))
 
             detail_root = fetch_national_welfare_detail(serv_id)
             if not detail_root:
@@ -206,37 +226,128 @@ def main():
             serv_digest = safe_find_text(detail_root, './/wlfareInfoOutlCn') or "" 
             tgt_info = safe_find_text(detail_root, './/tgtrDtlCn') or ""       
             slct_crit = safe_find_text(detail_root, './/slctCritCn') or ""     
-            alw_serv_cn = safe_find_text(detail_root, './/alwServCn') or ""    
+            alw_serv_cn = safe_find_text(detail_root, './/alwServCn') or ""
+            
+            # 상세 API에서 dept_name을 다시 가져옴 (더 완전한 정보가 있을 수 있음)
+            dept_name_detail = safe_find_text(detail_root, './/jurMnofNm')
+            if dept_name_detail:  # 상세 API에 더 자세한 정보가 있으면 덮어쓰기
+                dept_name = dept_name_detail
+                logger.info(f"[{serv_id}] Updated dept_name from detail API: '{dept_name}'")    
             
             # Helper to parse XML lists to JSON
-            def parse_xml_list(root, parent_tag, child_tag, fields):
+            # Note: XML 구조가 3가지 형태일 수 있음:
+            # 형태1: <parent><field>value</field></parent> (단일 항목)
+            # 형태2: <parent><child><field>value</field></child></parent> (단일 항목, child 있음)
+            # 형태3: <parent>...</parent><parent>...</parent> (다중 항목, 형제 노드로 반복)
+            def parse_xml_list_auto(root, parent_tag, possible_child_tag, fields):
                 results = []
-                parent = root.find(f'.//{parent_tag}')
-                if parent:
-                    for child in parent.findall(child_tag):
-                        data = {field: safe_find_text(child, field) for field in fields}
-                        results.append(data)
+                
+                # 시도 1: 형제로 반복되는 parent_tag들 찾기 (형태3)
+                parents = root.findall(f'.//{parent_tag}')
+                if not parents:
+                    return json.dumps([], ensure_ascii=False)
+                
+                # 각 parent에서 데이터 추출
+                for parent in parents:
+                    # child_tag가 있는지 확인
+                    children = parent.findall(possible_child_tag)
+                    if children:
+                        # 형태2: child가 있는 경우
+                        for child in children:
+                            data = {field: safe_find_text(child, field) for field in fields}
+                            if any(data.values()):
+                                results.append(data)
+                    else:
+                        # 형태1: parent 안에 직접 필드가 있는 경우
+                        data = {field: safe_find_text(parent, field) for field in fields}
+                        if any(data.values()):
+                            results.append(data)
+                
                 return json.dumps(results, ensure_ascii=False)
 
-            # JSON Fields
-            contact_info = parse_xml_list(detail_root, 'inqplCtadrList', 'inqplCtadr', ['servSeCode', 'servSeDetailLink', 'servSeDetailNm'])
-            attachments = parse_xml_list(detail_root, 'basfrmList', 'basfrm', ['servSeCode', 'servSeDetailLink', 'servSeDetailNm'])
-            base_laws = parse_xml_list(detail_root, 'baslawList', 'baslaw', ['servSeCode', 'servSeDetailNm'])
-            related_links = parse_xml_list(detail_root, 'inqplHmpgReldList', 'inqplHmpgReld', ['servSeCode', 'servSeDetailLink', 'servSeDetailNm'])
+            # JSON Fields (servSeCode 제거 - 의미 없는 필드)
+            contact_info = parse_xml_list_auto(detail_root, 'inqplCtadrList', 'inqplCtadr', ['servSeDetailLink', 'servSeDetailNm'])
+            attachments = parse_xml_list_auto(detail_root, 'basfrmList', 'basfrm', ['servSeDetailLink', 'servSeDetailNm'])
+            base_laws = parse_xml_list_auto(detail_root, 'baslawList', 'baslaw', ['servSeDetailNm'])
+            related_links = parse_xml_list_auto(detail_root, 'inqplHmpgReldList', 'inqplHmpgReld', ['servSeDetailLink', 'servSeDetailNm'])
             
-            # Application Method (formatted text from list if available)
-            # Some APIs provide explicit text, others list. Prioritize explicit text if exists, else format list.
-            # V001 tends to have 'applmetList'. We can format it.
-            # Or check if there is a text field like 'aplyMtdCn' (sometimes absent in V001).
-            # We will use what's available.
+            # 신청방법 리스트 (applmetList - 다중 항목)
+            apply_methods = parse_xml_list_auto(detail_root, 'applmetList', 'applmet', ['servSeDetailLink', 'servSeDetailNm'])
+            
+            # DEBUG: Log parsed JSON data
+            if contact_info != '[]':
+                logger.info(f"[{serv_id}] contact_info: {contact_info}")
+            if attachments != '[]':
+                logger.info(f"[{serv_id}] attachments: {len(json.loads(attachments))} items")
+            if related_links != '[]':
+                logger.info(f"[{serv_id}] related_links: {related_links}")
+            if apply_methods != '[]':
+                logger.info(f"[{serv_id}] apply_methods: {len(json.loads(apply_methods))} items")
+            
+            # 신청방법 텍스트로 포맷팅 (JSON 리스트를 텍스트로 변환)
+            apply_method_detail = None
+            if apply_methods != '[]':
+                methods_list = json.loads(apply_methods)
+                formatted_methods = []
+                for method in methods_list:
+                    link = method.get('servSeDetailLink', '')
+                    name = method.get('servSeDetailNm', '')
+                    if link and name:
+                        formatted_methods.append(f"{link} ({name})")
+                    elif link:
+                        formatted_methods.append(link)
+                    elif name:
+                        formatted_methods.append(name)
+                if formatted_methods:
+                    apply_method_detail = ', '.join(formatted_methods)
+            
+            # 상세 API에서 배열 필드도 확인 (목록 API와 다를 수 있음)
+            detail_life_array = parse_array(safe_find_text(detail_root, './/lifeArray'))
+            detail_intrs_array = parse_array(safe_find_text(detail_root, './/intrsThemaArray'))
+            detail_trgter_array = parse_array(safe_find_text(detail_root, './/trgterIndvdlArray'))
+            
+            # 상세 API에 더 많은 정보가 있으면 덮어쓰기
+            if detail_life_array:
+                life_nm_array = detail_life_array
+            if detail_intrs_array:
+                intrs_thema_nm_array = detail_intrs_array
+            if detail_trgter_array:
+                trgter_indvdl_nm_array = detail_trgter_array
+            
+            # 상세 API에서 서비스 메타도 확인
+            detail_sprt_cyc = safe_find_text(detail_root, './/sprtCycNm')
+            detail_srv_pvsn = safe_find_text(detail_root, './/srvPvsnNm')
+            if detail_sprt_cyc:
+                sprt_cyc_nm = detail_sprt_cyc
+            if detail_srv_pvsn:
+                srv_pvsn_nm = detail_srv_pvsn
+            
+            # contact_info를 텍스트로 변환
+            contact_text = ""
+            if contact_info != '[]':
+                contacts = json.loads(contact_info)
+                contact_parts = []
+                for contact in contacts:
+                    link = contact.get('servSeDetailLink', '')
+                    name = contact.get('servSeDetailNm', '')
+                    if link and name:
+                        contact_parts.append(f"{name}: {link}")
+                    elif link:
+                        contact_parts.append(link)
+                    elif name:
+                        contact_parts.append(name)
+                if contact_parts:
+                    contact_text = f"문의처: {', '.join(contact_parts)}"
             
             # Construct content for embedding
             content_blob = f"""
             서비스명: {serv_nm}
+            개요: {serv_digest}
             대상: {tgt_info}
             선정기준: {slct_crit}
             내용: {alw_serv_cn}
-            개요: {serv_digest}
+            {contact_text}
+            상세링크: {serv_dtl_link}
             """.strip()
             
             # Prepare DB Object
@@ -252,13 +363,14 @@ def main():
                 "enfc_end_ymd": None,
                 "serv_dtl_link": serv_dtl_link,
                 
-                # Arrays
-                "life_array": life_array,
+                # Arrays (이름만 저장, 코드 배열은 제거)
                 "life_nm_array": life_nm_array,
-                "intrs_thema_array": intrs_thema_array,
                 "intrs_thema_nm_array": intrs_thema_nm_array,
-                "trgter_indvdl_array": trgter_indvdl_array,
                 "trgter_indvdl_nm_array": trgter_indvdl_nm_array,
+                
+                # Service metadata
+                "sprt_cyc_nm": sprt_cyc_nm,
+                "srv_pvsn_nm": srv_pvsn_nm,
                 
                 # Details
                 "serv_dgst": safe_find_text(item, 'servDgst'),
@@ -266,8 +378,9 @@ def main():
                 "target_detail": tgt_info,
                 "select_criteria": slct_crit,
                 "service_content": alw_serv_cn,
-                #"apply_method_detail": ... # format from list?
+                "apply_method_detail": apply_method_detail,
                 "content_for_embedding": content_blob,
+                "content_hash": compute_content_hash(content_blob),  # 임베딩 변경 감지용
                 
                 # Metadata
                 "inq_num": inq_num,
@@ -285,13 +398,29 @@ def main():
             try:
                 supabase.table("benefits").upsert(db_data, on_conflict="serv_id").execute()
                 success_count += 1
+                total_success += 1
                 logger.info(f"Saved {serv_nm}")
             except Exception as e:
                 logger.error(f"Failed to upsert {serv_id}: {e}")
+                total_failed += 1
                 
             time.sleep(0.05) # Rate limit
             
         logger.info(f"Page {page} complete. Saved {success_count} items.")
+        page += 1  # Move to next page
+    
+    # Final Summary
+    logger.info("")
+    logger.info("="*60)
+    logger.info("중앙부처 복지 데이터 수집 완료")
+    logger.info("="*60)
+    logger.info(f"총 조회: {total_items_fetched}건")
+    logger.info(f"성공: {total_success}건")
+    logger.info(f"실패: {total_failed}건")
+    logger.info("="*60)
+    
+    # Output result as JSON for pipeline orchestration
+    print(f"\n__PIPELINE_RESULT__:{json.dumps({'total': total_items_fetched, 'success': total_success, 'failed': total_failed})}")
 
 if __name__ == "__main__":
     main()
