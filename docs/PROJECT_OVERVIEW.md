@@ -1,205 +1,115 @@
 # 👵 프로젝트 마스터 플랜: 똑순이 (Ttok-sun-i)
 
-## 1. 서비스 정의 및 타겟
+## 1. 서비스 정의 및 피벗 전략 (Pivot Strategy)
 
-- **서비스명**: 똑순이 - 시니어 혜택 알리미
-- **핵심 가치**: 복잡한 공공 혜택을 시니어 눈높이에서 해석하고 맞춤형으로 푸시 알림 제공
-- **타겟 유저**: 
-    - **시니어**: 5070 액티브 시니어 (카카오톡 접근)
-    - **일반/자녀 세대**: 1040 청년 및 중장년, 부모님 복지를 챙기는 자녀 (전용 앱 접근)
-- **플랫폼**: 
-    - **카카오톡 채널**: 시니어 친화적 간편 인터페이스
-    - **모바일 앱 (예정)**: 전 연령 대상 상세 검색 및 맞춤형 대시보드
+기존의 단순 포털 형식을 탈피하고, **"찾지 마세요, 알려드릴게요"**라는 캐치프레이즈로 **KakaoTalk Push 중심의 알림 서비스**로 전환합니다. 100만 기성 앱(복지로, 워크넷)과 경쟁하지 않고, 그들이 놓치고 있는 **'틈새(Niche)'**를 공략합니다.
 
-## 2. 기술 스택 (Tech Stack)
+### 핵심 가치 (Value Proposition)
+- **Deep Narrow**: 전국 대상이 아닌, **"서울 특정 구(예: 종로구) + 65세 이상 + 3040 자녀"**로 타겟 좁힘
+- **Push over Pull**: 검색(Pull)이 아닌, 자격 요건에 맞는 혜택만 골라서 **알림(Push)**
+- **Family Connection**: 디지털 소외 계층인 부모님을 대신해 **자녀가 구독하고 관리**
 
-- **Frontend**: KakaoTalk Chatbot Interface
-- **Backend**: AWS Serverless (Python, Lambda, API Gateway)
-- **Database**: Supabase (PostgreSQL + pgvector)
-- **AI/LLM**: Gemini Pro / GPT-4o-mini (RAG 구현 및 문서 요약)
-- **Infrastructure**: AWS SAM CLI, S3 (문서 임시 저장)
-
-## 3. 데이터베이스 설계 (Supabase SQL)
-
-이 스키마를 Supabase SQL Editor에서 실행하여 뼈대를 만듭니다.
-
-```sql
--- 확장 설치
-create extension if not exists vector;
-
--- 사용자 정보 (이사 대응 및 개인화)
-create table users (
-  id uuid primary key default uuid_generate_v4(),
-  kakao_user_id text unique not null,
-  region_si_do text,
-  region_si_gun_gu text,
-  interest_age_groups text[],  -- ['중장년', '노년'] (복수 선택) ⭐
-  created_at timestamp with time zone default now()
-);
-
--- 혜택 마스터 (정형 데이터)
--- 상세 스키마: docs/UNIFIED_SCHEMA_DESIGN.md 참고 ⭐
-create table benefits (
-  id bigint primary key generated always as identity,
-  serv_id varchar(20) unique not null,
-  title text not null,
-  category text,
-  life_nm_array text[],  -- 연령대 ['청년', '중장년', '노년'] ⭐
-  region_filter text,
-  content text,
-  original_url text,
-  created_at timestamp with time zone default now()
-);
-
--- 비정형 데이터 벡터 저장소
-create table benefit_embeddings (
-  id uuid primary key default uuid_generate_v4(),
-  benefit_id bigint references benefits(id) on delete cascade,
-  embedding vector(1536),
-  content_chunk text
-);
-```
-
-## 4. 데이터 수집 API 전략
-
-### 4.1 지자체복지서비스 API (복지로)
-- **API명**: 한국사회보장정보원_지자체복지서비스목록조회
-- **출처**: 공공데이터포털 (data.go.kr)
-- **엔드포인트**: `https://apis.data.go.kr/B554287/LocalGovernmentWelfareInformations/LcgvWelfarelist`
-
-### 4.2 데이터 수집 전략 (Phase 1 MVP)
-```python
-# 수집 설정
-life_array=None       # 모든 연령대 수집 (중요!) ⭐
-age=None              # 나이 필터 제거
-ctpv_nm='서울특별시'  # 서울만 수집
-```
-
-**전략 배경:**
-- ✅ **서울 전체 연령대 수집**: 357개 복지 서비스
-- ⭐ **모든 연령대 수집 이유**:
-  1. 향후 서비스 확장 대비 (청년, 중장년 등)
-  2. 재수집 불필요 (초기 한 번만)
-  3. 스토리지 비용 < 개발/운영 비용
-  4. 연령대별 혜택 통계 파악 가능
-- 🎯 **연령대 기반 필터링**: 사용자가 선택한 연령대(`life_nm_array`)로 DB에서 직접 필터링
-  - 온보딩: "어떤 연령대의 혜택을 받고 싶으신가요? (복수 선택)"
-  - 예: ['중장년', '노년'] 선택 → `life_nm_array && ARRAY['중장년', '노년']` 쿼리
-- 📈 **확장 가능**: 향후 경기도(1193개), 전국(4550개) 확장 용이
-
-**데이터 규모 (지자체 API):**
-| 필터 조건 | 데이터 건수 | 비고 |
-|----------|------------|------|
-| 서울 시니어(65세+) | 1개 | ❌ 필터 너무 강함 |
-| 서울 전체 연령 | 357개 | ✅ MVP 전략 |
-| 전국 전체 | 4550개 | Phase 2 |
-
-### 4.3 향후 추가 API 연동 계획
-- 중앙부처복지서비스 API (보류 - 파라미터 이슈)
-- 서울시 열린데이터광장 (필요시)
-- 경기도 데이터드림 (확장 시)
-
-## 5. 핵심 로직 및 기능 명세
-
-### 하이브리드 RAG ⭐
-유저의 **지역/연령대**로 SQL 필터링을 먼저 수행한 뒤, 해당 범위 내에서만 벡터 검색을 실행하여 할루시네이션(환각) 방지
-
-**검색 쿼리 예시:**
-```sql
-SELECT * FROM benefits
-WHERE (
-    -- 사용자 지역 (지자체 복지)
-    (ctpv_nm = '서울특별시' AND sgg_nm = '종로구')
-    OR
-    -- 전국 단위 (중앙부처 복지)
-    (ctpv_nm IS NULL AND source_api = 'NATIONAL')
-)
--- 사용자가 선택한 연령대
-AND life_nm_array && ARRAY['중장년', '노년']
-```
-
-### 데이터 파이프라인
-1. 공공데이터 API 수집 (지자체복지서비스 API)
-2. 지자체 공고(PDF, HWP, Excel) 다운로드 및 텍스트 추출 (Phase 2)
-3. LLM을 활용한 핵심 3요소(대상, 금액, 방법) 요약 및 벡터화
-
-### 사용자 관리 및 온보딩 ⭐
-- **온보딩 프로세스**:
-  1. 거주지 선택 (시/도, 시/군/구)
-  2. **관심 연령대 선택** (복수 선택 가능)
-     - 예: ['중장년', '노년'] 선택
-     - API의 `lifeNmArray` 값과 직접 매칭
-- **데이터 동기화**: 6개월 단위 거주지/관심사 확인 알림
-
-## 6. 수익 및 마케팅 전략
-
-### 수익화
-- **초기**: 쿠팡/알리 어필리에이트 API 연동
-- **성장기**: 가입자 확보 후 고단가 CPA(병원, 보험 상담 연결) 도입
-
-### 마케팅
-- 숏폼 자동 생성 파이프라인(서울시 25개 구 타겟)
-- 자녀 세대 대상 '효도 마케팅' 전개
+### 타겟 유저
+- **Primary (User)**: 65세 이상 액티브 시니어 (카카오톡 사용자)
+- **Secondary (Admin/Payer)**: 부모님의 복지를 챙기고 싶은 3040 자녀
 
 ---
 
-## 7. AI 코딩 유의사항
+## 2. 단계별 마일스톤 (Milestones)
 
-> **중요**: AI가 코드를 작성할 때 반드시 준수해야 할 원칙
+현실적인 성장 목표를 설정하고 단계별로 접근합니다.
 
-### ⚠️ 필수 원칙
+### Phase 1: 시니어 복지 알리미 (카카오 채널)
+*목표: 진성 유저 확보 및 '자녀-부모' 연결 모델 검증*
+- **기능**:
+    - 카카오톡 채널 챗봇
+    - 거주지(구 단위) & 연령대 기반 맞춤형 복지 알림
+    - 자녀 대리 등록 기능
+- **KPI 목표**:
+    - **Seed (1~3개월)**: 가입자 **1,000명** (차단율 5% 미만 방어)
+    - **Early (4~6개월)**: 가입자 **10,000명** (오픈율 30% 유지)
 
-1. **명확하게 이해하지 못했으면 코딩하기 전에 질문을 먼저**
-   - 요구사항이 애매하거나 불명확한 경우 즉시 질문
-   - 추측으로 코드를 작성하지 말 것
-   - 여러 해석이 가능한 경우 모든 옵션을 제시하고 확인 요청
+### Phase 2: 공공 일자리 매칭 (Game Changer)
+*목표: 서비스 리텐션 강화 및 본격 수익화*
+- **기능**:
+    - 공공 일자리(공공근로, 노인일자리) 마감 임박 알림
+    - 요양보호사 등 민간 일자리 정보 통합 (크롤링/제휴)
+- **KPI 목표**:
+    - **Growth (1년 차)**: 가입자 **50,000명+**
+    - **수익화**: 지역 광고 및 채용 중개 수수료 모델 도입
 
-2. **Fallback 하지 말고 에러 처리**
-   - 에러 발생 시 조용히 fallback 하지 말 것
-   - 명시적인 에러 처리 및 로깅 필수
-   - Slack 알림을 통한 에러 모니터링
-   - 사용자에게 명확한 에러 메시지 제공
+---
 
-3. **로컬 테스트 우선 개발**
-   - AWS 배포 및 테스트는 시간이 많이 소요됨
-   - 가능한 모든 기능을 **로컬에서 먼저 구현 및 테스트**
-   - Supabase는 Docker로 로컬 실행 (`supabase start`)
-   - Lambda 함수는 `sam local invoke`로 로컬 테스트
-   - AWS 배포는 로컬 테스트 완료 후 최종 검증 단계에서만
-   - 개발 사이클: **코드 작성 → 로컬 테스트 → 디버깅 → AWS 배포**
+## 3. 기술 스택 (Tech Stack)
 
-4. **클린 코드: 파일 분리**
-   - 파일의 내용이 많아지면 **여러 파일로 분리**
-   - 단일 책임 원칙 (Single Responsibility Principle) 준수
-   - 각 파일은 하나의 명확한 목적을 가져야 함
-   - 예: `app.py`가 500줄 이상이면 → `handlers/`, `utils/`, `models/` 등으로 분리
-   - 모듈화를 통한 재사용성 및 테스트 용이성 향상
+비용 효율성과 빠른 개발(Fast MVP)을 위해 Serverless Architecture를 유지합니다.
 
-### 예시
+- **Frontend**: KakaoTalk Chatbot Interface (별도 앱 개발 보류)
+- **Backend**: AWS Serverless (Python, Lambda, API Gateway)
+- **Database**: Supabase (PostgreSQL + pgvector)
+    - *변경점*: 벡터 검색보다는 **정형 데이터(지역/조건) 필터링** 성능 최적화 우선
+- **Data Pipeline**:
+    - Phase 1: 공공데이터포털 (지자체복지서비스)
+    - Phase 2: 공공 일자리 API + 웹 크롤링 (Selenium/Playwright)
 
-**❌ 나쁜 예 (Fallback)**
-```python
-def get_user_region(user_id):
-    try:
-        region = supabase.table('users').select('region_code').eq('id', user_id).execute()
-        return region.data[0]['region_code']
-    except:
-        return 'ALL'  # 조용히 fallback - 나쁨!
+---
+
+## 4. 데이터베이스 설계 핵심 (Supabase)
+
+개인화 알림을 위한 유저 프로필과 필터링 조건이 핵심입니다.
+
+```sql
+-- 사용자 정보 (Onboarding 시 수집)
+create table users (
+  id uuid primary key default uuid_generate_v4(),
+  kakao_user_id text unique not null,
+  
+  -- 필수 타겟팅 정보 (DB Filtering용)
+  birth_year integer,      -- 출생년도 (나이 계산)
+  region_ctpv text,        -- 시도 (예: 서울특별시)
+  region_sgg text,         -- 시군구 (예: 종로구)
+  target_group text[],     -- 대상 특성 (예: ['장애인', '저소득', '한부모·조손'])
+  
+  -- 메타 정보
+  relationship text,       -- '본인', '자녀', '기타'
+  created_at timestamp with time zone default now()
+);
+
+-- 알림 발송 이력 (중복 발송 방지)
+create table notification_logs (
+  user_id uuid references users(id),
+  benefit_id bigint references benefits(id),
+  sent_at timestamp default now(),
+  status text -- 'SENT', 'FAILED', 'READ'
+);
 ```
 
-**✅ 좋은 예 (명시적 에러 처리)**
-```python
-def get_user_region(user_id):
-    try:
-        result = supabase.table('users').select('region_code').eq('id', user_id).execute()
-        if not result.data:
-            raise ValueError(f'User not found: {user_id}')
-        return result.data[0]['region_code']
-    except Exception as e:
-        notify_error('get_user_region 실패', {
-            '사용자 ID': user_id,
-            '에러': str(e)
-        })
-        raise  # 에러를 상위로 전파
-```
+---
 
+## 5. 데이터 수집 및 알림 전략
+
+### Data Source
+1.  **지자체복지서비스 API**: 서울시 25개 구 데이터 우선 수집
+2.  **보조금24 (정부24)**: 전국 단위 대형 혜택 (기초연금 등)
+
+### User Query Processing Strategy (Hybrid Search)
+1.  **DB Search (확실한 정보)**
+    - 조건: `나이`, `거주지`, `대상특성`이 100% 일치하는 혜택
+    - 처리: **즉시 결과에 포함** (LLM 검증 불필요, 비용 0)
+2.  **Vector Search (맥락 탐색)**
+    - 조건: 사용자 질문(Query)과 의미적으로 유사한 혜택 검색
+    - 처리: 검색된 후보군 + User Profile을 **LLM에 전송하여 필터링** (자격요건 검증)
+3.  **Result Presentation (UX)**
+    - DB 검색 결과 + LLM 필터링 결과를 합쳐서 **서비스 제목 리스트** 먼저 제시
+    - 사용자가 제목 클릭 시 **상세 요약 정보(Pre-generated Summary)** 표시
+
+---
+
+## 6. 수익화 모델 (Business Model)
+
+1.  **Affiliate (초기)**
+    - 알림 메시지 하단에 '시니어 추천 상품(지팡이, 영양제)' 쿠팡 파트너스 링크 삽입
+2.  **Hyper-Local Ads (중기)**
+    - "종로구 할머니들이 자주 가는 정형외과" / "동네 요양병원" 광고
+3.  **Recruitment (장기 - Phase 2)**
+    - 시니어 인력 파견 업체 매칭 수수료 (헤드헌팅 모델)

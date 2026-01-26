@@ -216,7 +216,6 @@ create table if not exists benefit_embeddings (
   embedding vector(1024),
   content_chunk text,
   chunk_index int default 0,
-  content_hash text,                             -- 변경 감지용 (content_for_embedding의 hash)
   created_at timestamp with time zone default now()
 );
 
@@ -430,6 +429,92 @@ end;
 $$ language plpgsql;
 
 comment on function search_benefits_hybrid(vector, text, text, text[], int) is '하이브리드 RAG: SQL 필터링(지역+연령대) + 벡터 유사도 검색';
+
+create or replace function get_eligible_benefits(
+  p_ctpv text,          -- 예: '전라남도' (없으면 null)
+  p_sgg text,           -- 예: '진도군' (없으면 null)
+  p_life_array text[],  -- 예: ['노년', '중장년'] (빈배열이면 전체)
+  p_target_array text[] -- 예: ['저소득', '장애인'] (빈배열이면 전체)
+)
+returns setof benefits
+language sql
+security definer
+as $$
+  select *
+  from benefits
+  where 
+    is_active = true
+    
+    -- 1. [기간] 종료일이 없거나(계속), 오늘 이후인 경우
+    and (enfc_end_ymd is null or enfc_end_ymd >= current_date)
+    
+    -- 2. [지역] 
+    -- Case A: 전국 (둘 다 Null)
+    -- Case B: 내 시/도 일치 + 시/군/구 Null (광역 혜택)
+    -- Case C: 내 시/도 일치 + 내 시/군/구 일치 (기초 혜택)
+    and (
+        (ctpv_nm is null and sgg_nm is null) 
+        or (ctpv_nm = p_ctpv and sgg_nm is null)
+        or (ctpv_nm = p_ctpv and sgg_nm = p_sgg)
+    )
+
+    -- 3. [대상] (Array Overlap && 연산자 사용)
+    -- 혜택 대상이 없거나(Null/Empty) OR 내 대상과 하나라도 겹치는 경우
+    and (
+        trgter_indvdl_nm_array is null 
+        or cardinality(trgter_indvdl_nm_array) = 0
+        or (p_target_array is not null and trgter_indvdl_nm_array && p_target_array)
+    )
+
+    -- 4. [생애주기] 
+    -- 혜택 생애가 없거나(Null/Empty) OR 내 생애와 하나라도 겹치는 경우
+    and (
+        life_nm_array is null 
+        or cardinality(life_nm_array) = 0
+        or (p_life_array is not null and life_nm_array && p_life_array)
+    );
+$$;
+
+
+create or replace function match_benefits(
+  query_embedding vector(1024),
+  match_threshold float,
+  match_count int,
+  p_ctpv text,
+  p_sgg text
+)
+returns setof benefits
+language plpgsql
+security definer
+as $$
+begin
+  return query
+  select b.*
+  from benefit_embeddings be
+  join benefits b on be.benefit_id = b.id
+  where 
+    -- 1. 임베딩 유사도 (Threshold 복구)
+    1 - (be.embedding <=> query_embedding) > match_threshold
+    
+    -- 2. 유효 기간 체크 (만료된 혜택 제외)
+    -- enfc_end_ymd가 NULL이면 계속 진행 중인 것으로 간주(또는 9999-12-31)
+    and (b.enfc_end_ymd is null or b.enfc_end_ymd >= current_date)
+    and b.is_active = true
+
+    -- 3. 지역 필터 (내 지역 + 중앙부처)
+    and (
+       b.source_api = 'NATIONAL'
+       or (
+           (b.ctpv_nm is null and b.sgg_nm is null) 
+           or (b.ctpv_nm = p_ctpv and b.sgg_nm is null)
+           or (b.ctpv_nm = p_ctpv and b.sgg_nm = p_sgg)
+       )
+    )
+    
+  order by be.embedding <=> query_embedding asc
+  limit match_count;
+end;
+$$;
 
 -- ============================================
 -- Row Level Security (RLS) 정책

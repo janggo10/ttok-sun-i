@@ -11,40 +11,44 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.common.rag_service import RAGService
 
 # Setup minimal logging
-logging.basicConfig(level=logging.ERROR)
-
-def process_stream(stream):
-    """Handle Bedrock Streaming Output"""
-    full_text = ""
-    print("\n🤖 똑순이: ", end="", flush=True)
-    
-    for event in stream:
-        chunk = event.get('chunk')
-        if chunk:
-            chunk_json = json.loads(chunk.get('bytes').decode())
-            if chunk_json.get('type') == 'content_block_delta':
-                text_delta = chunk_json['delta']['text']
-                print(text_delta, end="", flush=True)
-                full_text += text_delta
-                
-    print("\n")
-    return full_text
+logging.basicConfig(level=logging.INFO)
 
 def main():
     load_dotenv()
     
-    print("\n💡 똑순이 RAG 서비스 테스트 CLI (type 'quit' to exit)")
+    print("\n💡 똑순이 Hybrid Search 테스트 CLI (type 'quit' to exit)")
     print("="*60)
     
     # 1. Setup Mock User Profile
-    # In a real app, this comes from the DB (onboarding data)
+    # Updated to match new schema: target_group, etc.
+    # [참고] DB(trgter_indvdl_nm_array) 실제 값 예시:
+    # - ['저소득', '한부모·조손']
+    # - ['장애인']
+    # - ['다문화·북한이탈주민'] 
+    # - [] (빈 배열 = 제한 없음/전국민)
+    '''
     user_profile = {
-        "ctpv_nm": "서울특별시",
-        "sgg_nm": "강남구",
-        "interest_ages": ["청년", "중장년"] 
+        "ctpv_nm": "경상남도",
+        "sgg_nm": "거제시",
+        "birth_year": 1955,       # 생년월일 (참고용/계산용)
+        "life_cycle": ["노년"],     # 생애주기 필터링용 (DB: life_nm_array)
+        "target_group": [] # 테스트하고 싶은 조건들을 여기에 추가하세요
     }
+    '''
+    user_profile = {
+        "ctpv_nm": "전라남도",
+        "sgg_nm": "나주시",
+        "birth_year": 1955,       # 생년월일 (참고용/계산용)
+        "life_cycle": ["노년"],     # 생애주기 필터링용 (DB: life_nm_array)
+        "target_group": [] # 테스트하고 싶은 조건들을 여기에 추가하세요
+    }
+    #    "target_group": ["저소득", "한부모·조손", "장애인"] # 테스트하고 싶은 조건들을 여기에 추가하세요
     
-    print(f"📍 사용자 프로필 설정: {user_profile['ctpv_nm']} {user_profile['sgg_nm']} (관심: {', '.join(user_profile['interest_ages'])})")
+    print(f"📍 사용자 프로필: {user_profile['ctpv_nm']} {user_profile['sgg_nm']}")
+    print(f"   생년월일: {user_profile['birth_year']}")
+    print(f"   생애주기: {user_profile['life_cycle']}")
+    print(f"   대상 특성: {user_profile['target_group']}")
+    print("   (주의: DB에 이 조건에 맞는 데이터가 충분히 있어야 테스트가 잘 됩니다)")
     print("="*60)
 
     try:
@@ -55,35 +59,50 @@ def main():
 
     while True:
         try:
-            query = input("\n🗣️  질문: ").strip()
+            query = input("\n🗣️  질문 (예: 육아용품 지원): ").strip()
             if query.lower() in ['quit', 'exit', 'q']:
                 break
             if not query:
                 continue
 
-            print(f"🔍 '{query}' 검색 중...")
+            print(f"🔍 '{query}' 검색 & 필터링 중...")
+            start_time = time.time()
             
-            # 2. Get Response (Streamed)
-            context_docs, stream = rag_service.get_response(query, user_profile, stream=True)
+            # 2. Get Recommended Services (List Only)
+            results = rag_service.get_recommended_services(query, user_profile, top_k=20)
             
-            # Print Context Used
-            if context_docs:
-                print(f"\n📚 참고 문서 ({len(context_docs)}건):")
-                for i, doc in enumerate(context_docs, 1):
-                    # Truncate content for display
-                    content_preview = doc['content'][:100].replace('\n', ' ') + "..."
-                    print(f"  [{i}] {doc['title']} (유사도: {doc['similarity']:.4f})")
-                    # print(f"      {content_preview}")
+            elapsed = time.time() - start_time
+            print(f"⏱️ 소요시간: {elapsed:.2f}초")
+            
+            if results:
+                print(f"\n✅ 추천 혜택 목록 ({len(results)}건):")
+                print("-" * 60)
+                for i, item in enumerate(results, 1):
+                    # Debug Info: Check why this item was picked
+                    prov_type = item.get('srv_pvsn_nm') or 'N/A'
+                    targets = item.get('trgter_indvdl_nm_array') or '전국민/제한없음'
+                    
+                    start_date = item.get('enfc_bgng_ymd') or '...'
+                    end_date = item.get('enfc_end_ymd') or '...'
+                    
+                    print(f"[{i}] [{item.get('source_type', 'UNKNOWN')}] {item['serv_nm']}")
+                    print(f"    - ID: {item['id']}")
+                    print(f"    - 기간: {start_date} ~ {end_date}")
+                    print(f"    - 유형: {prov_type} (현금/현물 우선순위 확인)")
+                    print(f"    - 생애: {item.get('life_nm_array') or '전생애'}")
+                    print(f"    - 대상: {targets}")
+                    print(f"    - 지역: {item.get('ctpv_nm', '')} {item.get('sgg_nm', '')}")
+                    print("-" * 60)
             else:
-                print("\n⚠️  참고할 만한 문서가 발견되지 않았습니다.")
+                print("\n⚠️  조건에 맞는 혜택이 없습니다.")
+                print("   (지역/대상 조건에 맞는 데이터가 DB에 있는지 확인해주세요)")
 
-            # Print Answer
-            process_stream(stream)
-            
         except KeyboardInterrupt:
             break
         except Exception as e:
             print(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
 
     print("\n👋 안녕히 가세요!")
 
