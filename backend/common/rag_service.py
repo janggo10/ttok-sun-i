@@ -64,7 +64,7 @@ class RAGService:
             }
             
             # Call RPC
-            response = self.supabase.rpc("get_eligible_benefits", params).execute()
+            response = self.supabase.rpc("get_eligible_benefits", params).select("id, srv_pvsn_nm, ctpv_nm, sgg_nm").execute()
             return response.data
             
         except Exception as e:
@@ -102,7 +102,7 @@ class RAGService:
                     # This ensures local benefits (like ID 7740) are ranked effectively even if national score > local score
                     params = {
                         "query_embedding": embedding,
-                        "match_threshold": 0.1, 
+                        "match_threshold": 0.3, # 0.1 -> 0.3 (Stricter filtering)
                         "match_count": 50,
                         "p_ctpv": user_profile.get("ctpv_nm"),
                         "p_sgg": user_profile.get("sgg_nm")
@@ -147,12 +147,35 @@ class RAGService:
         remaining_slots = top_k - len(final_results)
         
         if remaining_slots > 0:
-            # Sort Strategy: Cash/In-kind ("현금", "현물") First
+            # Sort Strategy:
+            # 1. Region Specificity (High Priority):
+            #    - Same Gun/Gu (sgg_nm match) -> Priority 0
+            #    - Same City/Do (ctpv_nm match) -> Priority 1
+            #    - National/Other -> Priority 2
+            # 2. Benefit Type (Secondary):
+            #    - Cash/In-kind -> sub -1 (boost)
+            
+            user_sgg = user_profile.get("sgg_nm", "")
+            user_ctpv = user_profile.get("ctpv_nm", "")
+
             def priority_sort_key(item):
+                # Region Score (Lower is better)
+                item_sgg = str(item.get('sgg_nm') or '')
+                item_ctpv = str(item.get('ctpv_nm') or '')
+                
+                region_score = 2 # Default: National/None
+                if item_sgg and item_sgg == user_sgg:
+                    region_score = 0 # Match SGG
+                elif item_ctpv and item_ctpv == user_ctpv:
+                    region_score = 1 # Match CTPV
+                
+                # Type Score (Tie-breaker)
                 prov_type = str(item.get('srv_pvsn_nm', '') or '')
+                type_score = 1
                 if '현금' in prov_type or '현물' in prov_type:
-                    return 0 # High Priority
-                return 1 # Low Priority
+                    type_score = 0
+                
+                return (region_score, type_score)
             
             # Sort the whitelist (excluding already seen)
             remaining_candidates = [item for item in whitelist_items if item['id'] not in seen_ids]
@@ -165,8 +188,31 @@ class RAGService:
                 item_copy['source_type'] = 'RULES'
                 final_results.append(item_copy)
                 seen_ids.add(item['id'])
-                remaining_slots -= 1
-                if remaining_slots <= 0:
+                if len(final_results) >= top_k:
                     break
         
-        return final_results
+        # 5. Fetch FULL details for the final candidates
+        final_candidates = final_results[:top_k]
+        if not final_candidates:
+            return []
+            
+        final_ids = [c['id'] for c in final_candidates]
+        logger.info(f"Fetching full details for {len(final_ids)} items...")
+        
+        try:
+            # Fetch full rows for these IDs
+            response = self.supabase.table("benefits").select("*").in_("id", final_ids).execute()
+            full_details_map = {item['id']: item for item in response.data}
+            
+            enrich_results = []
+            for c in final_candidates:
+                if c['id'] in full_details_map:
+                    full_item = full_details_map[c['id']]
+                    full_item['source_type'] = c.get('source_type')
+                    enrich_results.append(full_item)
+            
+            return enrich_results
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch full details: {e}")
+            return []

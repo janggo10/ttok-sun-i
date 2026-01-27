@@ -68,7 +68,7 @@ def generate_embedding(bedrock, text):
         logger.error(f"Embedding generation failed: {e}")
         return None
 
-def split_text(text, max_length=1000, overlap=100):
+def split_text(text, max_length=4000, overlap=200):
     """
     Simple text splitter with overlap.
     Titav v2 supports up to 8k tokens, but smaller chunks (512-1024 chars) usually work better for RAG.
@@ -106,8 +106,8 @@ def process_single_chunk(bedrock, supabase, benefit_id, serv_id, chunk_content, 
     if embedding:
         data = {
             "benefit_id": benefit_id,
-            "serv_id": serv_id,
-            "chunk_content": chunk_content,
+            # "serv_id": serv_id, # Column does not exist in benefit_embeddings table
+            "content_chunk": chunk_content, # Correct column name: content_chunk
             "chunk_index": chunk_index,
             "embedding": embedding
         }
@@ -119,7 +119,8 @@ def process_single_chunk(bedrock, supabase, benefit_id, serv_id, chunk_content, 
                 supabase.table("benefit_embeddings").insert(data).execute()
                 return True
             except Exception as e:
-                # logger.warning(f"DB Insert failed for {serv_id} chunk {chunk_index} (Attempt {attempt+1}): {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"DB Insert failed for {serv_id} chunk {chunk_index} (Attempt {attempt+1}): {e}")
                 time.sleep(1)
                 
     return False
