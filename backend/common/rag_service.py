@@ -69,7 +69,7 @@ class RAGService:
             
         except Exception as e:
             logger.error(f"Whitelist fetch failed: {e}")
-            return []
+            return []. . 
 
     def get_recommended_services(self, query_text: str, user_profile: Dict[str, Any], top_k: int = 10) -> List[Dict[str, Any]]:
         """

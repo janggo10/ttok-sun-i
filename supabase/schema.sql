@@ -16,13 +16,13 @@ comment on extension vector is '시니어 혜택 문맥 검색을 위한 벡터 
 -- [0] 기존 테이블 삭제 (초기화)
 drop table if exists onboarding_logs cascade;
 drop table if exists api_sync_logs cascade;
-drop table if exists notification_history cascade;
+drop table if exists notification_logs cascade;
 drop table if exists user_benefit_interactions cascade;
-drop table if exists benefit_embeddings cascade;
-drop table if exists benefits cascade;
+-- drop table if exists benefit_embeddings cascade;
+-- drop table if exists benefits cascade;
 drop table if exists users cascade;
-drop table if exists category_codes cascade;
-drop table if exists regions cascade;
+-- drop table if exists category_codes cascade;
+-- drop table if exists regions cascade;
 
 -- [2] 지역코드 마스터 테이블 (행정안전부 법정동코드)
 create table if not exists regions (
@@ -46,14 +46,14 @@ comment on column regions.depth is '1=시도, 2=시군구(온보딩 저장 레�
 comment on column regions.deprecated_at is '행정구역 통폐합 시 자동 업데이트';
 
 -- 인덱스 생성
-create index idx_regions_region_code on regions(region_code);
-create index idx_regions_parent_code on regions(parent_code);
-create index idx_regions_sido_code on regions(sido_code);
-create index idx_regions_depth on regions(depth);
-create index idx_regions_active on regions(is_active) where is_active = true;
+create index if not exists idx_regions_region_code on regions(region_code);
+create index if not exists idx_regions_parent_code on regions(parent_code);
+create index if not exists idx_regions_sido_code on regions(sido_code);
+create index if not exists idx_regions_depth on regions(depth);
+create index if not exists idx_regions_active on regions(is_active) where is_active = true;
 
 -- 지역명 검색용 전문 검색 인덱스
-create index idx_regions_name_gin on regions using gin(to_tsvector('simple', name));
+create index if not exists idx_regions_name_gin on regions using gin(to_tsvector('simple', name));
 
 
 
@@ -68,13 +68,16 @@ create table if not exists users (
   
   -- 읍/면/동 레벨 필수 (애플리케이션 로직에서 검증)
   -- 세종시는 depth=2 허용, 나머지는 depth>=3
+  -- 거주지 정보 (검색 최적화)
   region_code varchar(10) NOT NULL references regions(region_code),
-  region_depth int NOT NULL,
+  region_depth int NOT NULL, -- 나중을 위해 살려둠
+  ctpv_nm varchar(50) NOT NULL,                     -- 시도명 (서울특별시)
+  sgg_nm varchar(50) NOT NULL,                      -- 시군구명 (종로구)
   
   gender text check (gender in ('M', 'F', 'OTHER', null)),
   
-  -- 관심 연령대 (복수 선택 가능) ⭐ 변경됨!
-  interest_age_groups text[],                       -- ['중장년', '노년'] 형태
+  -- 생년월일 (생애주기 자동 계산용) ⭐ 변경됨!
+  birth_year int NOT NULL,                          -- 출생년도 (YYYY)
   
   last_region_check_at timestamp with time zone,    -- 6개월 거주지 확인
   region_update_count int default 0,                -- 지역 변경 횟수
@@ -87,15 +90,15 @@ create table if not exists users (
 
 comment on table users is '이용자 프로필 및 개인화 설정 정보';
 comment on column users.kakao_user_id is '카카오톡 채널 사용자 고유 식별자 (plusfriend_user_key)';
-comment on column users.region_code is '읍/면/동 레벨 지역코드 필수 (depth=3 or 4, 세종시는 depth=2. 예: 1168010100=역삼동, 4113510301=서현동)';
-comment on column users.region_depth is '저장된 지역코드 깊이 (2=세종시 읍/면, 3=읍/면/동, 4=구가 있는 시의 동). 애플리케이션에서 검증';
-comment on column users.interest_age_groups is '관심 연령대 배열 (예: [''중장년'', ''노년'']). API lifeNmArray와 직접 매칭';
+comment on column users.region_code is '법정동코드 (통계/정확한 위치용)';
+comment on column users.ctpv_nm is '시도명 (검색 필터링용 denormalized column)';
+comment on column users.sgg_nm is '시군구명 (검색 필터링용 denormalized column)';
+comment on column users.birth_year is '출생년도 (예: 1955). 검색 시점에 만나이/생애주기 계산';
 comment on column users.last_region_check_at is '6개월 주기 거주지 확인 알림용';
-comment on column users.region_update_count is '이상 패턴 감지용 (이사 횟수 추적)';
 
-create index idx_users_region on users(region_code) where is_active = true;
-create index idx_users_interest_ages on users using gin(interest_age_groups) where is_active = true;
-create index idx_users_active on users(is_active);
+create index if not exists idx_users_region_text on users(ctpv_nm, sgg_nm) where is_active = true;
+create index if not exists idx_users_birth_year on users(birth_year);
+create index if not exists idx_users_active on users(is_active);
 
 -- ============================================
 -- 혜택 데이터 테이블
@@ -176,27 +179,27 @@ comment on column benefits.content_hash is '2단계 중복 제거: 1단계 문�
 comment on column benefits.enfc_end_ymd is '마감일 (NULL = 상시, 99991231 = 무기한)';
 
 -- 인덱스 생성
-create index idx_benefits_serv_id on benefits(serv_id);
-create index idx_benefits_source_api on benefits(source_api);
-create index idx_benefits_active on benefits(is_active) where is_active = true;
+create index if not exists idx_benefits_serv_id on benefits(serv_id);
+create index if not exists idx_benefits_source_api on benefits(source_api);
+create index if not exists idx_benefits_active on benefits(is_active) where is_active = true;
 
 -- 지역 검색 인덱스
-create index idx_benefits_region on benefits(ctpv_nm, sgg_nm) where ctpv_nm is not null;
+create index if not exists idx_benefits_region on benefits(ctpv_nm, sgg_nm) where ctpv_nm is not null;
 
 -- 배열 검색을 위한 GIN 인덱스 (연령대 필터링 핵심!) ⭐
-create index idx_benefits_life_array on benefits using gin(life_nm_array);
-create index idx_benefits_intrs_thema on benefits using gin(intrs_thema_nm_array);
-create index idx_benefits_trgter on benefits using gin(trgter_indvdl_nm_array);
+create index if not exists idx_benefits_life_array on benefits using gin(life_nm_array);
+create index if not exists idx_benefits_intrs_thema on benefits using gin(intrs_thema_nm_array);
+create index if not exists idx_benefits_trgter on benefits using gin(trgter_indvdl_nm_array);
 
 -- 기간 검색 인덱스
-create index idx_benefits_dates on benefits(enfc_end_ymd) where is_active = true;
-create index idx_benefits_updated_at on benefits(updated_at);
+create index if not exists idx_benefits_dates on benefits(enfc_end_ymd) where is_active = true;
+create index if not exists idx_benefits_updated_at on benefits(updated_at);
 
 -- 중복 제거 인덱스
-create index idx_benefits_hash on benefits(content_hash);
+create index if not exists idx_benefits_hash on benefits(content_hash);
 
 -- 전문검색 인덱스 (한글 - simple parser 사용)
-create index idx_benefits_content_search on benefits using gin(
+create index if not exists idx_benefits_content_search on benefits using gin(
   to_tsvector('simple',
     coalesce(serv_nm, '') || ' ' ||
     coalesce(serv_dgst, '') || ' ' ||
@@ -222,15 +225,14 @@ create table if not exists benefit_embeddings (
 comment on table benefit_embeddings is '문맥 검색을 위한 혜택 상세 내용의 벡터 데이터';
 comment on column benefit_embeddings.embedding is 'AWS Bedrock Titan Embeddings V2 모델 사용';
 comment on column benefit_embeddings.chunk_index is '긴 공고문 분할 시 원본 순서 보존';
-comment on column benefit_embeddings.content_hash is '변경 감지: content_for_embedding의 SHA256 hash (임베딩 재생성 여부 판단용)';
 
 -- HNSW 인덱스 (벡터 검색 성능 최적화)
-create index idx_benefit_embeddings_vector 
+create index if not exists idx_benefit_embeddings_vector 
   on benefit_embeddings 
   using hnsw (embedding vector_cosine_ops)
   with (m = 16, ef_construction = 64);
 
-create index idx_benefit_embeddings_benefit_id on benefit_embeddings(benefit_id);
+create index if not exists idx_benefit_embeddings_benefit_id on benefit_embeddings(benefit_id);
 
 comment on index idx_benefit_embeddings_vector is 'HNSW 인덱스로 벡터 유사도 검색 속도 10-100배 향상';
 
@@ -249,33 +251,48 @@ create table if not exists user_benefit_interactions (
   created_at timestamp with time zone default now()
 );
 
-comment on table user_benefit_interactions is '개인화 추천 및 사용자 행동 분석용';
-comment on column user_benefit_interactions.interaction_type is 'VIEW: 조회, BOOKMARK: 북마크, APPLY: 신청, SHARE: 공유, DISMISS: 관심없음';
+comment on table user_benefit_interactions is '사용자 활동 로그 (클릭, 찜하기 등)';
+comment on column user_benefit_interactions.interaction_type is 'VIEW(상세조회), BOOKMARK(찜), APPLY(신청하기클릭), SHARE(공유), DISMISS(숨김)';
 
-create index idx_interactions_user on user_benefit_interactions(user_id, created_at desc);
-create index idx_interactions_benefit on user_benefit_interactions(benefit_id, interaction_type);
-create index idx_interactions_type on user_benefit_interactions(interaction_type, created_at desc);
+create index if not exists idx_interactions_user on user_benefit_interactions(user_id);
+create index if not exists idx_interactions_benefit on user_benefit_interactions(benefit_id);
+create index if not exists idx_interactions_type on user_benefit_interactions(interaction_type, created_at desc);
 
--- [8] 알림 발송 이력
-create table if not exists notification_history (
+-- [8] 알림 발송 이력 (Notification Logs)
+create table if not exists notification_logs (
   id uuid primary key default uuid_generate_v4(),
-  user_id uuid references users(id) on delete cascade,
-  benefit_id bigint references benefits(id) on delete set null,
-  notification_type text not null check (
-    notification_type in ('NEW_BENEFIT', 'DEADLINE_ALERT', 'REGION_CHECK', 'WEEKLY_DIGEST')
-  ),
-  message_content text,
-  sent_at timestamp with time zone default now(),
-  is_read boolean default false,
-  read_at timestamp with time zone
+  user_id uuid references users(id) on delete set null,
+  
+  -- 발송 내용
+  template_id varchar(50),                           -- 알림톡 템플릿 ID (없으면 NULL)
+  message_type varchar(20) not null                  -- KAKAO_PUSH, KAKAO_FRIEND, SMS 등
+    check (message_type in ('KAKAO_PUSH', 'KAKAO_FRIEND', 'SMS', 'EMAIL')),
+  title varchar(100),
+  body text,
+  
+  -- 발송 결과
+  status varchar(20) not null                        -- PENDING, SENT, FAILED, READ
+    check (status in ('PENDING', 'SENT', 'FAILED', 'READ')),
+  sent_at timestamp with time zone,
+  error_message text,
+  
+  -- 메타데이터
+  related_benefit_id bigint references benefits(id) on delete set null,
+  campaign_id varchar(50),                           -- 마케팅 캠페인 ID (옵션)
+  
+  created_at timestamp with time zone default now(),
+  updated_at timestamp with time zone default now()
 );
 
-comment on table notification_history is '알림톡 발송 이력 및 중복 방지';
-comment on column notification_history.notification_type is 'NEW_BENEFIT: 신규 혜택, DEADLINE_ALERT: 마감 임박, REGION_CHECK: 거주지 확인, WEEKLY_DIGEST: 주간 요약';
+comment on table notification_logs is '알림 메시지 발송 이력 (카카오톡, SMS 등)';
+comment on column notification_logs.status is 'PENDING(발송대기), SENT(발송성공), FAILED(실패), READ(수신확인-가능시)';
 
-create index idx_notifications_user on notification_history(user_id, sent_at desc);
-create index idx_notifications_benefit on notification_history(benefit_id);
-create index idx_notifications_type on notification_history(notification_type, sent_at desc);
+create index if not exists idx_noti_logs_user on notification_logs(user_id);
+create index if not exists idx_noti_logs_status on notification_logs(status);
+create index if not exists idx_noti_logs_date on notification_logs(created_at);
+
+-- [8] 알림 발송 이력
+
 
 -- ============================================
 -- 운영 관리 테이블
@@ -298,8 +315,8 @@ create table if not exists api_sync_logs (
 comment on table api_sync_logs is '데이터 수집 자동화 배치 작업 이력 관리 (매일 1회 실행)';
 comment on column api_sync_logs.duplicates_skipped is '2단계 중복 제거 전략으로 걸러진 건수';
 
-create index idx_sync_logs_source on api_sync_logs(source_name, started_at desc);
-create index idx_sync_logs_status on api_sync_logs(status, started_at desc);
+create index if not exists idx_sync_logs_source on api_sync_logs(source_name, started_at desc);
+create index if not exists idx_sync_logs_status on api_sync_logs(status, started_at desc);
 
 -- [10] 온보딩 로그 테이블 (파싱 성공률 모니터링)
 create table if not exists onboarding_logs (
@@ -324,9 +341,9 @@ comment on column onboarding_logs.step is 'REGION_INPUT: 지역 입력, REGION_C
 comment on column onboarding_logs.parse_method is 'REGEX: 정규식, LLM: AI파싱, BUTTON_SELECT: 버튼선택, MANUAL_SELECT: 수동선택';
 comment on column onboarding_logs.selected_age_groups is '사용자가 선택한 관심 연령대 (예: [''중장년'', ''노년''])';
 
-create index idx_onboarding_user on onboarding_logs(user_id, created_at desc);
-create index idx_onboarding_step on onboarding_logs(step, created_at desc);
-create index idx_onboarding_parse_success on onboarding_logs(parse_success, parse_method);
+create index if not exists idx_onboarding_user on onboarding_logs(user_id, created_at desc);
+create index if not exists idx_onboarding_step on onboarding_logs(step, created_at desc);
+create index if not exists idx_onboarding_parse_success on onboarding_logs(parse_success, parse_method);
 
 -- ============================================
 -- 유틸리티 함수
@@ -341,12 +358,15 @@ begin
 end;
 $$ language plpgsql;
 
+drop trigger if exists update_users_updated_at on users;
 create trigger update_users_updated_at before update on users
   for each row execute function update_updated_at_column();
 
+drop trigger if exists update_benefits_updated_at on benefits;
 create trigger update_benefits_updated_at before update on benefits
   for each row execute function update_updated_at_column();
 
+drop trigger if exists update_regions_updated_at on regions;
 create trigger update_regions_updated_at before update on regions
   for each row execute function update_updated_at_column();
 
@@ -476,6 +496,14 @@ as $$
 $$;
 
 
+-- 구버전 match_benefits 함수 삭제 (search_benefits_hybrid 또는 통합된 match_benefits 사용)
+-- 여기서는 일단 남겨두지만, rag_service.py가 이걸 사용하는지 확인 필요.
+-- rag_service.py는 match_benefits를 사용중이므로, 아래 내용을 최신 로직(search_benefits_hybrid 로직)으로 업데이트하거나 유지해야 함.
+-- 사용자가 'unused function' 정리를 요청했으나, rag_service.py가 match_benefits를 쓰고 있으므로 '삭제' 대신 '유지'하되 코멘트 남김.
+-- (실제로는 rag_service.py에서 match_benefits를 호출하므로 삭제하면 안됨. 
+--  단, search_benefits_hybrid가 더 나은 버전이라면 rag_service.py를 수정하고 이걸 지워야 함.
+--  현재는 match_benefits만 쓰고 있음)
+
 create or replace function match_benefits(
   query_embedding vector(1024),
   match_threshold float,
@@ -523,25 +551,9 @@ $$;
 -- [14] 사용자 데이터 보호
 alter table users enable row level security;
 alter table user_benefit_interactions enable row level security;
-alter table notification_history enable row level security;
-
--- 사용자는 본인 데이터만 조회 가능
-create policy "Users can view own data"
-  on users for select
-  using (auth.uid()::text = kakao_user_id);
-
-create policy "Users can update own data"
-  on users for update
-  using (auth.uid()::text = kakao_user_id);
-
--- 상호작용 로그는 본인 것만 조회
-create policy "Users can view own interactions"
-  on user_benefit_interactions for select
-  using (user_id = (select id from users where kakao_user_id = auth.uid()::text));
-
 -- 알림 이력은 본인 것만 조회
 create policy "Users can view own notifications"
-  on notification_history for select
+  on notification_logs for select
   using (user_id = (select id from users where kakao_user_id = auth.uid()::text));
 
 -- ============================================
