@@ -1,21 +1,16 @@
 import json
 import os
-import sys
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import time
 
-# Add layer path
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
-
+# common 모듈 파일들이 같은 디렉토리에 있음
 try:
-    from common.supabase_client import SupabaseClient
-except ImportError:
-    try:
-        from backend.common.supabase_client import SupabaseClient
-    except ImportError:
-        SupabaseClient = None
+    from supabase_client import SupabaseClient
+except ImportError as e:
+    print(f"❌ Import Error: {e}")
+    raise ImportError(f"Failed to import common modules: {e}")
 
 # Constants
 # Consistent with collect_national_welfare.py

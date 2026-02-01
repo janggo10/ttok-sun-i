@@ -2,11 +2,13 @@
 Supabase 프로젝트 활성 상태 유지
 """
 import os
-import sys
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../common'))
-
-from supabase_client import SupabaseClient
+# common 모듈 파일들이 같은 디렉토리에 있음
+try:
+    from supabase_client import SupabaseClient
+except ImportError as e:
+    print(f"❌ Import Error: {e}")
+    raise ImportError(f"Failed to import common modules: {e}")
 
 
 def lambda_handler(event, context):

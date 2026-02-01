@@ -9,19 +9,19 @@ create extension if not exists "uuid-ossp";
 
 comment on extension vector is '시니어 혜택 문맥 검색을 위한 벡터 연산 확장';
 
+-- [1-2] 한국 시간(KST) 설정 🕐
+-- 세션 타임존 설정
+SET timezone = 'Asia/Seoul';
+-- 영구 설정: ALTER DATABASE postgres SET timezone TO 'Asia/Seoul'; (관리자 권한 필요)
+
 -- ============================================
 -- 마스터 데이터 테이블
 -- ============================================
 
 -- [0] 기존 테이블 삭제 (초기화)
-drop table if exists onboarding_logs cascade;
-drop table if exists api_sync_logs cascade;
-drop table if exists notification_logs cascade;
-drop table if exists user_benefit_interactions cascade;
 -- drop table if exists benefit_embeddings cascade;
 -- drop table if exists benefits cascade;
 drop table if exists users cascade;
--- drop table if exists category_codes cascade;
 -- drop table if exists regions cascade;
 
 -- [2] 지역코드 마스터 테이블 (행정안전부 법정동코드)
@@ -36,8 +36,8 @@ create table if not exists regions (
   order_num int,                            -- 정렬 순서
   is_active boolean default true,
   deprecated_at timestamp with time zone,    -- 행정구역 통폐합 시 기록
-  created_at timestamp with time zone default now(),
-  updated_at timestamp with time zone default now()
+  created_at timestamp with time zone default (now() AT TIME ZONE 'Asia/Seoul'),
+  updated_at timestamp with time zone default (now() AT TIME ZONE 'Asia/Seoul')
 );
 
 comment on table regions is '전국 행정표준코드 마스터 데이터 (행정안전부 API 연동, 분기 1회 갱신)';
@@ -76,16 +76,20 @@ create table if not exists users (
   
   gender text check (gender in ('M', 'F', 'OTHER', null)),
   
-  -- 생년월일 (생애주기 자동 계산용) ⭐ 변경됨!
-  birth_year int NOT NULL,                          -- 출생년도 (YYYY)
+  -- 생년월일 (생애주기 자동 계산용)
+  birth_year int NOT NULL,                          -- 출생연도 (YYYY)
+  
+  -- 혜택 필터링 조건 (온보딩 또는 자동 계산) ⭐
+  life_cycle text[],                                -- 생애주기 배열 ['노년', '중장년'] 등
+  target_group text[],                              -- 대상 특성 ['저소득', '장애인'] 등
   
   last_region_check_at timestamp with time zone,    -- 6개월 거주지 확인
   region_update_count int default 0,                -- 지역 변경 횟수
   is_active boolean default true,
   notification_enabled boolean default true,
   
-  created_at timestamp with time zone default now(),
-  updated_at timestamp with time zone default now()
+  created_at timestamp with time zone default (now() AT TIME ZONE 'Asia/Seoul'),
+  updated_at timestamp with time zone default (now() AT TIME ZONE 'Asia/Seoul')
 );
 
 comment on table users is '이용자 프로필 및 개인화 설정 정보';
@@ -94,11 +98,17 @@ comment on column users.region_code is '법정동코드 (통계/정확한 위치
 comment on column users.ctpv_nm is '시도명 (검색 필터링용 denormalized column)';
 comment on column users.sgg_nm is '시군구명 (검색 필터링용 denormalized column)';
 comment on column users.birth_year is '출생년도 (예: 1955). 검색 시점에 만나이/생애주기 계산';
+comment on column users.life_cycle is '생애주기 배열 (예: [''노년'', ''중장년'']). 온보딩 시 선택 또는 birth_year 기반 자동 계산';
+comment on column users.target_group is '대상 특성 배열 (예: [''저소득'', ''장애인'']). 온보딩 시 선택';
 comment on column users.last_region_check_at is '6개월 주기 거주지 확인 알림용';
 
 create index if not exists idx_users_region_text on users(ctpv_nm, sgg_nm) where is_active = true;
 create index if not exists idx_users_birth_year on users(birth_year);
 create index if not exists idx_users_active on users(is_active);
+
+-- 생애주기 및 대상 특성 검색용 GIN 인덱스
+create index if not exists idx_users_life_cycle on users using gin(life_cycle);
+create index if not exists idx_users_target_group on users using gin(target_group);
 
 -- ============================================
 -- 혜택 데이터 테이블
@@ -166,8 +176,8 @@ create table if not exists benefits (
   is_active boolean default true,
   content_hash text,                                 -- 중복 제거용
   
-  created_at timestamp with time zone default now(),
-  updated_at timestamp with time zone default now()
+  created_at timestamp with time zone default (now() AT TIME ZONE 'Asia/Seoul'),
+  updated_at timestamp with time zone default (now() AT TIME ZONE 'Asia/Seoul')
 );
 
 comment on table benefits is '정부 및 지자체 복지 혜택 통합 마스터 (복지로 API 연동)';
@@ -212,138 +222,62 @@ create index if not exists idx_benefits_content_search on benefits using gin(
 -- AI/RAG 데이터 테이블
 -- ============================================
 
--- [6] 벡터 데이터 저장소
+-- [6] 벡터 데이터 저장소 (복지 + 일자리 통합) 🔥
 create table if not exists benefit_embeddings (
   id uuid primary key default uuid_generate_v4(),
+  
+  -- 카테고리 (네임스페이스 역할, Partial Index용)
+  category varchar(20) not null default 'WELFARE'
+    check (category in ('WELFARE', 'JOB')),
+  
+  -- 원본 데이터 참조 (둘 중 하나만 NOT NULL)
   benefit_id bigint references benefits(id) on delete cascade,
-  embedding vector(1024),
-  content_chunk text,
+  job_posting_id bigint references job_postings(id) on delete cascade,
+  
+  -- 벡터 데이터
+  embedding vector(1536) not null,  -- OpenAI text-embedding-3-small (1536차원)
+  content_chunk text not null,
   chunk_index int default 0,
-  created_at timestamp with time zone default now()
+  
+  -- 타임스탬프 (한국 시간)
+  created_at timestamp with time zone default (now() AT TIME ZONE 'Asia/Seoul'),
+  
+  -- 제약조건: benefit_id OR job_posting_id (둘 중 하나만)
+  constraint check_single_reference check (
+    (benefit_id is not null and job_posting_id is null) or
+    (benefit_id is null and job_posting_id is not null)
+  )
 );
 
-comment on table benefit_embeddings is '문맥 검색을 위한 혜택 상세 내용의 벡터 데이터';
-comment on column benefit_embeddings.embedding is 'AWS Bedrock Titan Embeddings V2 모델 사용';
+comment on table benefit_embeddings is '복지/일자리 통합 벡터 임베딩 (OpenAI text-embedding-3-small)';
+comment on column benefit_embeddings.category is '서비스 카테고리: WELFARE(복지), JOB(일자리) - Partial Index 최적화용';
+comment on column benefit_embeddings.benefit_id is '복지 테이블 참조 (category=WELFARE일 때)';
+comment on column benefit_embeddings.job_posting_id is '일자리 테이블 참조 (category=JOB일 때)';
+comment on column benefit_embeddings.embedding is 'OpenAI text-embedding-3-small 모델 사용 (1536차원)';
 comment on column benefit_embeddings.chunk_index is '긴 공고문 분할 시 원본 순서 보존';
 
--- HNSW 인덱스 (벡터 검색 성능 최적화)
-create index if not exists idx_benefit_embeddings_vector 
+-- 카테고리별 Partial HNSW 인덱스 (성능 최적화!) 🔥
+-- WELFARE 전용 벡터 인덱스
+create index if not exists idx_benefit_embeddings_vector_welfare 
   on benefit_embeddings 
   using hnsw (embedding vector_cosine_ops)
-  with (m = 16, ef_construction = 64);
+  with (m = 16, ef_construction = 64)
+  where category = 'WELFARE';
 
-create index if not exists idx_benefit_embeddings_benefit_id on benefit_embeddings(benefit_id);
+-- JOB 전용 벡터 인덱스
+create index if not exists idx_benefit_embeddings_vector_job 
+  on benefit_embeddings 
+  using hnsw (embedding vector_cosine_ops)
+  with (m = 16, ef_construction = 64)
+  where category = 'JOB';
 
-comment on index idx_benefit_embeddings_vector is 'HNSW 인덱스로 벡터 유사도 검색 속도 10-100배 향상';
+-- 기타 인덱스
+create index if not exists idx_benefit_embeddings_category on benefit_embeddings(category);
+create index if not exists idx_benefit_embeddings_benefit_id on benefit_embeddings(benefit_id) where benefit_id is not null;
+create index if not exists idx_benefit_embeddings_job_posting_id on benefit_embeddings(job_posting_id) where job_posting_id is not null;
 
--- ============================================
--- 사용자 행동 추적 테이블
--- ============================================
-
--- [7] 사용자-혜택 상호작용 로그
-create table if not exists user_benefit_interactions (
-  id uuid primary key default uuid_generate_v4(),
-  user_id uuid references users(id) on delete cascade,
-  benefit_id bigint references benefits(id) on delete cascade,
-  interaction_type text not null check (
-    interaction_type in ('VIEW', 'BOOKMARK', 'APPLY', 'SHARE', 'DISMISS')
-  ),
-  created_at timestamp with time zone default now()
-);
-
-comment on table user_benefit_interactions is '사용자 활동 로그 (클릭, 찜하기 등)';
-comment on column user_benefit_interactions.interaction_type is 'VIEW(상세조회), BOOKMARK(찜), APPLY(신청하기클릭), SHARE(공유), DISMISS(숨김)';
-
-create index if not exists idx_interactions_user on user_benefit_interactions(user_id);
-create index if not exists idx_interactions_benefit on user_benefit_interactions(benefit_id);
-create index if not exists idx_interactions_type on user_benefit_interactions(interaction_type, created_at desc);
-
--- [8] 알림 발송 이력 (Notification Logs)
-create table if not exists notification_logs (
-  id uuid primary key default uuid_generate_v4(),
-  user_id uuid references users(id) on delete set null,
-  
-  -- 발송 내용
-  template_id varchar(50),                           -- 알림톡 템플릿 ID (없으면 NULL)
-  message_type varchar(20) not null                  -- KAKAO_PUSH, KAKAO_FRIEND, SMS 등
-    check (message_type in ('KAKAO_PUSH', 'KAKAO_FRIEND', 'SMS', 'EMAIL')),
-  title varchar(100),
-  body text,
-  
-  -- 발송 결과
-  status varchar(20) not null                        -- PENDING, SENT, FAILED, READ
-    check (status in ('PENDING', 'SENT', 'FAILED', 'READ')),
-  sent_at timestamp with time zone,
-  error_message text,
-  
-  -- 메타데이터
-  related_benefit_id bigint references benefits(id) on delete set null,
-  campaign_id varchar(50),                           -- 마케팅 캠페인 ID (옵션)
-  
-  created_at timestamp with time zone default now(),
-  updated_at timestamp with time zone default now()
-);
-
-comment on table notification_logs is '알림 메시지 발송 이력 (카카오톡, SMS 등)';
-comment on column notification_logs.status is 'PENDING(발송대기), SENT(발송성공), FAILED(실패), READ(수신확인-가능시)';
-
-create index if not exists idx_noti_logs_user on notification_logs(user_id);
-create index if not exists idx_noti_logs_status on notification_logs(status);
-create index if not exists idx_noti_logs_date on notification_logs(created_at);
-
--- [8] 알림 발송 이력
-
-
--- ============================================
--- 운영 관리 테이블
--- ============================================
-
--- [9] API 수집 및 동기화 로그
-create table if not exists api_sync_logs (
-  id uuid primary key default uuid_generate_v4(),
-  source_name text not null,
-  sync_type text check (sync_type in ('API', 'CRAWL', 'MANUAL')),
-  status text not null check (status in ('SUCCESS', 'PARTIAL', 'FAIL')),
-  started_at timestamp with time zone default now(),
-  finished_at timestamp with time zone,
-  rows_affected int default 0,
-  duplicates_skipped int default 0,
-  error_log text,
-  metadata jsonb
-);
-
-comment on table api_sync_logs is '데이터 수집 자동화 배치 작업 이력 관리 (매일 1회 실행)';
-comment on column api_sync_logs.duplicates_skipped is '2단계 중복 제거 전략으로 걸러진 건수';
-
-create index if not exists idx_sync_logs_source on api_sync_logs(source_name, started_at desc);
-create index if not exists idx_sync_logs_status on api_sync_logs(status, started_at desc);
-
--- [10] 온보딩 로그 테이블 (파싱 성공률 모니터링)
-create table if not exists onboarding_logs (
-  id uuid primary key default uuid_generate_v4(),
-  user_id uuid references users(id) on delete cascade,
-  step text not null check (
-    step in ('REGION_INPUT', 'REGION_CONFIRM', 'AGE_GROUP_SELECT', 'ONBOARDING_COMPLETE')
-  ),
-  input_text text,              -- 사용자 입력값
-  parse_method text check (
-    parse_method in ('REGEX', 'LLM', 'BUTTON_SELECT', 'MANUAL_SELECT', null)
-  ),
-  parse_success boolean,        -- 파싱 성공 여부
-  parsed_region_code varchar(10) references regions(region_code),
-  selected_age_groups text[],   -- 선택된 연령대 배열 ⭐
-  attempt_count int default 1,  -- 재시도 횟수
-  created_at timestamp with time zone default now()
-);
-
-comment on table onboarding_logs is '온보딩 프로세스 모니터링 및 파싱 성공률 분석용';
-comment on column onboarding_logs.step is 'REGION_INPUT: 지역 입력, REGION_CONFIRM: 확인, AGE_GROUP_SELECT: 관심 연령대 선택, ONBOARDING_COMPLETE: 완료';
-comment on column onboarding_logs.parse_method is 'REGEX: 정규식, LLM: AI파싱, BUTTON_SELECT: 버튼선택, MANUAL_SELECT: 수동선택';
-comment on column onboarding_logs.selected_age_groups is '사용자가 선택한 관심 연령대 (예: [''중장년'', ''노년''])';
-
-create index if not exists idx_onboarding_user on onboarding_logs(user_id, created_at desc);
-create index if not exists idx_onboarding_step on onboarding_logs(step, created_at desc);
-create index if not exists idx_onboarding_parse_success on onboarding_logs(parse_success, parse_method);
+comment on index idx_benefit_embeddings_vector_welfare is 'WELFARE 전용 HNSW 인덱스 (검색 속도 2배 향상)';
+comment on index idx_benefit_embeddings_vector_job is 'JOB 전용 HNSW 인덱스 (검색 속도 2배 향상)';
 
 -- ============================================
 -- 유틸리티 함수
@@ -353,10 +287,12 @@ create index if not exists idx_onboarding_parse_success on onboarding_logs(parse
 create or replace function update_updated_at_column()
 returns trigger as $$
 begin
-  new.updated_at = now();
+  new.updated_at = now() AT TIME ZONE 'Asia/Seoul';
   return new;
 end;
 $$ language plpgsql;
+
+comment on function update_updated_at_column() is 'updated_at을 한국 시간(KST)으로 자동 갱신';
 
 drop trigger if exists update_users_updated_at on users;
 create trigger update_users_updated_at before update on users
@@ -370,97 +306,43 @@ drop trigger if exists update_regions_updated_at on regions;
 create trigger update_regions_updated_at before update on regions
   for each row execute function update_updated_at_column();
 
--- [11] 만료된 혜택 자동 비활성화 함수
-create or replace function deactivate_expired_benefits()
-returns void as $$
-begin
-  update benefits
-  set is_active = false
-  where enfc_end_ymd < current_date
-    and enfc_end_ymd is not null
-    and enfc_end_ymd != '9999-12-31'::date  -- 무기한 제외
-    and is_active = true;
-end;
-$$ language plpgsql;
-
-comment on function deactivate_expired_benefits is '매일 실행: 시행종료일 지난 혜택 자동 아카이빙 (무기한 99991231 제외)';
-
--- [12] 중복 제거용 해시 생성 함수
-create or replace function generate_content_hash(p_title text, p_content text)
-returns text as $$
-begin
-  return md5(lower(regexp_replace(p_title || p_content, '\s+', '', 'g')));
-end;
-$$ language plpgsql immutable;
-
-comment on function generate_content_hash is '제목+내용 기반 해시 생성 (공백 제거 후 소문자 변환)';
-
 -- ============================================
 -- 하이브리드 RAG 검색 함수
 -- ============================================
 
-
-create or replace function search_benefits_hybrid(
-  query_embedding vector(1024),
-  user_ctpv_nm text,                                 -- 사용자 시도명
-  user_sgg_nm text,                                  -- 사용자 시군구명
-  user_interest_ages text[],                         -- 사용자 관심 연령대 배열
-  limit_count int default 5
-)
-returns table (
-  benefit_id bigint,
-  serv_id varchar(20),
-  title text,
-  content text,
-  original_url text,
-  similarity float
-) as $$
-begin
-  return query
-  select 
-    b.id as benefit_id,
-    b.serv_id,
-    b.serv_nm::text as title,
-    b.content_for_embedding::text as content,
-    b.serv_dtl_link::text as original_url,
-    1 - (be.embedding <=> query_embedding) as similarity
-  from benefits b
-  join benefit_embeddings be on b.id = be.benefit_id
-  where b.is_active = true
-    -- 유효기간 체크
-    and (b.enfc_end_ymd is null or b.enfc_end_ymd >= current_date)
-    and (b.enfc_bgng_ymd is null or b.enfc_bgng_ymd <= current_date)
-    -- 지역 필터: 지자체(사용자 지역) OR 중앙부처(전국)
-    and (
-      (
-        b.ctpv_nm = user_ctpv_nm 
-        and (b.sgg_nm = user_sgg_nm or b.sgg_nm is null)
-      )
-      or (b.ctpv_nm is null and b.source_api = 'NATIONAL')
-    )
-    -- 연령대 필터: 배열 겹침 연산자 (&&) ⭐⭐⭐
-    and (
-      b.life_nm_array is null 
-      or b.life_nm_array && user_interest_ages
-    )
-  order by be.embedding <=> query_embedding
-  limit limit_count;
-end;
-$$ language plpgsql;
-
-comment on function search_benefits_hybrid(vector, text, text, text[], int) is '하이브리드 RAG: SQL 필터링(지역+연령대) + 벡터 유사도 검색';
-
+-- [함수 1] 자격요건 Whitelist 조회
 create or replace function get_eligible_benefits(
   p_ctpv text,          -- 예: '전라남도' (없으면 null)
   p_sgg text,           -- 예: '진도군' (없으면 null)
   p_life_array text[],  -- 예: ['노년', '중장년'] (빈배열이면 전체)
   p_target_array text[] -- 예: ['저소득', '장애인'] (빈배열이면 전체)
 )
-returns setof benefits
+returns table (
+  id bigint,
+  serv_nm varchar(500),
+  srv_pvsn_nm varchar(50),
+  ctpv_nm varchar(50),
+  sgg_nm varchar(50),
+  trgter_indvdl_nm_array text[],
+  life_nm_array text[],
+  serv_dgst text,
+  enfc_end_ymd date,
+  serv_dtl_link varchar(500)
+)
 language sql
 security definer
 as $$
-  select *
+  select 
+    id,
+    serv_nm,
+    srv_pvsn_nm,
+    ctpv_nm,
+    sgg_nm,
+    trgter_indvdl_nm_array,
+    life_nm_array,
+    serv_dgst,
+    enfc_end_ymd,
+    serv_dtl_link
   from benefits
   where 
     is_active = true
@@ -479,50 +361,85 @@ as $$
     )
 
     -- 3. [대상] (Array Overlap && 연산자 사용)
-    -- 혜택 대상이 없거나(Null/Empty) OR 내 대상과 하나라도 겹치는 경우
+    -- Case A: 서비스 대상이 없음(Null/Empty) → 전국민 대상 (포함)
+    -- Case B: 서비스 대상 있음 + 사용자 대상 있음 + 겹침 → 포함
+    -- Case C: 서비스 대상 있음 + 사용자 대상 없음 → 제외!
     and (
-        trgter_indvdl_nm_array is null 
-        or cardinality(trgter_indvdl_nm_array) = 0
-        or (p_target_array is not null and trgter_indvdl_nm_array && p_target_array)
+        -- Case A: 서비스 대상이 없으면 전국민 대상
+        (trgter_indvdl_nm_array is null or cardinality(trgter_indvdl_nm_array) = 0)
+        or
+        -- Case B: 서비스 대상도 있고, 사용자 대상도 있고, 둘이 겹침
+        (trgter_indvdl_nm_array is not null 
+         and cardinality(trgter_indvdl_nm_array) > 0
+         and p_target_array is not null 
+         and cardinality(p_target_array) > 0 
+         and trgter_indvdl_nm_array && p_target_array)
     )
 
     -- 4. [생애주기] 
-    -- 혜택 생애가 없거나(Null/Empty) OR 내 생애와 하나라도 겹치는 경우
+    -- 혜택 생애주기가 없거나(Null/Empty) → 모든 연령대 대상
+    -- 사용자가 생애주기를 선택하지 않았거나(Null/Empty) → 모든 혜택 검색
+    -- 배열이 겹치면 → 해당 혜택 포함
     and (
         life_nm_array is null 
         or cardinality(life_nm_array) = 0
-        or (p_life_array is not null and life_nm_array && p_life_array)
+        or p_life_array is null
+        or cardinality(p_life_array) = 0
+        or life_nm_array && p_life_array
     );
 $$;
 
+comment on function get_eligible_benefits(text, text, text[], text[]) is '자격요건 기반 Whitelist 조회 (지역+연령대+대상특성 필터)';
 
--- 구버전 match_benefits 함수 삭제 (search_benefits_hybrid 또는 통합된 match_benefits 사용)
--- 여기서는 일단 남겨두지만, rag_service.py가 이걸 사용하는지 확인 필요.
--- rag_service.py는 match_benefits를 사용중이므로, 아래 내용을 최신 로직(search_benefits_hybrid 로직)으로 업데이트하거나 유지해야 함.
--- 사용자가 'unused function' 정리를 요청했으나, rag_service.py가 match_benefits를 쓰고 있으므로 '삭제' 대신 '유지'하되 코멘트 남김.
--- (실제로는 rag_service.py에서 match_benefits를 호출하므로 삭제하면 안됨. 
---  단, search_benefits_hybrid가 더 나은 버전이라면 rag_service.py를 수정하고 이걸 지워야 함.
---  현재는 match_benefits만 쓰고 있음)
-
+-- [함수 2] 벡터 검색 (의미 유사도 기반)
+-- 참고: 연령대 필터 없음 (get_eligible_benefits와 교집합으로 처리)
 create or replace function match_benefits(
-  query_embedding vector(1024),
+  query_embedding vector(1536),  -- OpenAI text-embedding-3-small (1536차원)
   match_threshold float,
   match_count int,
   p_ctpv text,
-  p_sgg text
+  p_sgg text,
+  p_life_array text[],
+  p_target_array text[]
 )
-returns setof benefits
+returns table (
+  id bigint,
+  serv_nm varchar(500),
+  srv_pvsn_nm varchar(50),
+  ctpv_nm varchar(50),
+  sgg_nm varchar(50),
+  trgter_indvdl_nm_array text[],
+  life_nm_array text[],
+  serv_dgst text,
+  enfc_end_ymd date,
+  serv_dtl_link varchar(500),
+  similarity float  -- 🆕 유사도 점수 추가!
+)
 language plpgsql
 security definer
 as $$
 begin
   return query
-  select b.*
+  select 
+    b.id,
+    b.serv_nm,
+    b.srv_pvsn_nm,
+    b.ctpv_nm,
+    b.sgg_nm,
+    b.trgter_indvdl_nm_array,
+    b.life_nm_array,
+    b.serv_dgst,
+    b.enfc_end_ymd,
+    b.serv_dtl_link,
+    (1 - (be.embedding <=> query_embedding))::float as similarity  -- 🆕 유사도 계산!
   from benefit_embeddings be
   join benefits b on be.benefit_id = b.id
   where 
+    -- 0. 카테고리 필터 (복지만 검색)
+    be.category = 'WELFARE'
+    
     -- 1. 임베딩 유사도 (Threshold 복구)
-    1 - (be.embedding <=> query_embedding) > match_threshold
+    and 1 - (be.embedding <=> query_embedding) > match_threshold
     
     -- 2. 유효 기간 체크 (만료된 혜택 제외)
     -- enfc_end_ymd가 NULL이면 계속 진행 중인 것으로 간주(또는 9999-12-31)
@@ -539,10 +456,34 @@ begin
        )
     )
     
-  order by be.embedding <=> query_embedding asc
+    -- 4. 대상 특성 필터 (get_eligible_benefits와 동일 로직)
+    and (
+        -- Case A: 서비스 대상이 없으면 전국민 대상
+        (b.trgter_indvdl_nm_array is null or cardinality(b.trgter_indvdl_nm_array) = 0)
+        or
+        -- Case B: 서비스 대상도 있고, 사용자 대상도 있고, 둘이 겹침
+        (b.trgter_indvdl_nm_array is not null 
+         and cardinality(b.trgter_indvdl_nm_array) > 0
+         and p_target_array is not null 
+         and cardinality(p_target_array) > 0 
+         and b.trgter_indvdl_nm_array && p_target_array)
+    )
+    
+    -- 5. 생애주기 필터 (get_eligible_benefits와 동일 로직)
+    and (
+        b.life_nm_array is null 
+        or cardinality(b.life_nm_array) = 0
+        or p_life_array is null
+        or cardinality(p_life_array) = 0
+        or b.life_nm_array && p_life_array
+    )
+    
+  order by similarity desc  -- 유사도 높은 순으로 정렬
   limit match_count;
 end;
 $$;
+
+comment on function match_benefits(vector, float, int, text, text, text[], text[]) is '벡터 검색 (similarity 점수 포함, 지역+생애주기+대상 필터링)';
 
 -- ============================================
 -- Row Level Security (RLS) 정책
@@ -550,11 +491,6 @@ $$;
 
 -- [14] 사용자 데이터 보호
 alter table users enable row level security;
-alter table user_benefit_interactions enable row level security;
--- 알림 이력은 본인 것만 조회
-create policy "Users can view own notifications"
-  on notification_logs for select
-  using (user_id = (select id from users where kakao_user_id = auth.uid()::text));
 
 -- ============================================
 -- 설치 완료 확인
@@ -575,25 +511,29 @@ select * from pg_extension where extname in ('vector', 'uuid-ossp');
 -- 완료 메시지
 do $$
 begin
-  raise notice '✅ 똑순이 데이터베이스 스키마 설치 완료!';
-  raise notice '📊 생성된 테이블: 10개';
-  raise notice '  - regions (지역코드 마스터, depth 1-4 계층)';
-  raise notice '  - users (관심 연령대 배열 필드 추가)';
-  raise notice '  - benefits (통합 스키마: 지자체+중앙부처 API)';
-  raise notice '  - benefit_embeddings (RAG 벡터 저장소)';
-  raise notice '  - onboarding_logs (파싱 성공률 모니터링)';
-  raise notice '🔧 생성된 함수: 4개';
-  raise notice '  - search_benefits_hybrid (하이브리드 RAG 검색)';
-  raise notice '  - deactivate_expired_benefits (만료 혜택 정리)';
-  raise notice '🔐 RLS 정책: 4개';
+  raise notice '✅ 똑순이 데이터베이스 스키마 설치 완료! (MVP 버전)';
   raise notice '';
-  raise notice '⭐ 주요 변경사항:';
-  raise notice '  - 연령 필터링: birth_year → interest_age_groups 배열';
-  raise notice '  - benefits 테이블: API 통합 스키마 (life_nm_array 배열)';
-  raise notice '  - 하이브리드 RAG: 지역 + 연령대 배열 필터링';
+  raise notice '📊 생성된 테이블: 4개';
+  raise notice '  - regions (지역코드 마스터, depth 1-4 계층)';
+  raise notice '  - users (사용자 프로필)';
+  raise notice '  - benefits (복지 혜택 통합 마스터)';
+  raise notice '  - benefit_embeddings (RAG 벡터 저장소)';
+  raise notice '';
+  raise notice '🔧 생성된 함수: 3개';
+  raise notice '  - update_updated_at_column (자동 타임스탬프)';
+  raise notice '  - get_eligible_benefits (자격요건 Whitelist)';
+  raise notice '  - match_benefits (벡터 검색)';
+  raise notice '';
+  raise notice '🔐 RLS 정책: 1개';
+  raise notice '  - users 테이블 보호';
+  raise notice '';
+  raise notice '🎯 MVP 버전 특징:';
+  raise notice '  - 핵심 기능만 포함 (간결한 스키마)';
+  raise notice '  - 하이브리드 RAG: 자격요건 필터 + 벡터 검색';
+  raise notice '  - birth_year 기반 자동 생애주기 변환';
   raise notice '';
   raise notice '다음 단계:';
-  raise notice '1. 복지로 API 키 발급 (지자체+중앙부처)';
-  raise notice '2. 데이터 수집 스크립트 작성 (서울 357개 + 전국 365개)';
-  raise notice '3. 온보딩 챗봇 구현 (지역 + 연령대 선택)';
+  raise notice '1. 데이터 수집 (복지로 API)';
+  raise notice '2. 임베딩 생성 (Bedrock Titan)';
+  raise notice '3. 온보딩 구현 (카카오톡 챗봇)';
 end $$;

@@ -3,18 +3,19 @@
 분기별 1회 실행되어 행정안전부 API에서 최신 법정동코드를 가져와 Supabase에 동기화합니다.
 """
 import os
-import sys
 import json
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import List, Dict, Set
 
-# 상위 디렉토리의 common 모듈을 사용하기 위해 path 추가
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
-
-from common.supabase_client import SupabaseClient
-from common.slack_notifier import notify_info, notify_error
+# common 모듈 파일들이 같은 디렉토리에 있음
+try:
+    from supabase_client import SupabaseClient
+    from slack_notifier import notify_info, notify_error
+except ImportError as e:
+    print(f"❌ Import Error: {e}")
+    raise ImportError(f"Failed to import common modules: {e}")
 
 # Lambda 실행 시 필요한 환경변수
 # MOIS_API_KEY

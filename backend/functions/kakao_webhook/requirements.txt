@@ -2,5 +2,4 @@
 supabase>=2.0.0
 boto3>=1.34.0
 requests>=2.31.0
-python-dotenv>=1.0.0
-openai>=1.12.0  # OpenAI API
+openai>=1.12.0

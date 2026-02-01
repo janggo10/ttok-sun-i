@@ -5,11 +5,10 @@ import time
 import logging
 import hashlib
 import random
-from botocore.exceptions import ClientError
-import boto3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from openai import OpenAI
 
 # Load environment variables
 load_dotenv()
@@ -17,8 +16,8 @@ load_dotenv()
 # Configuration
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
-AWS_REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
-MAX_WORKERS = int(os.environ.get("EMBEDDING_MAX_WORKERS", "3"))
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+MAX_WORKERS = int(os.environ.get("EMBEDDING_MAX_WORKERS", "20"))
 
 # Logging Setup
 logging.basicConfig(
@@ -37,33 +36,28 @@ def get_supabase_client():
         sys.exit(1)
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-def get_bedrock_client():
+def get_openai_client():
+    """Initialize OpenAI client"""
+    if not OPENAI_API_KEY:
+        logger.error("OPENAI_API_KEY environment variable not set")
+        sys.exit(1)
     try:
-        return boto3.client(service_name='bedrock-runtime', region_name=AWS_REGION)
+        return OpenAI(api_key=OPENAI_API_KEY)
     except Exception as e:
-        logger.error(f"Failed to initialize Bedrock client: {e}")
+        logger.error(f"Failed to initialize OpenAI client: {e}")
         sys.exit(1)
 
-def generate_embedding(bedrock, text):
+def generate_embedding(openai_client, text):
     """
-    Generate embedding using Amazon Titan Text Embeddings v2.
+    Generate embedding using OpenAI text-embedding-3-small.
     """
-    model_id = "amazon.titan-embed-text-v2:0"
-    body = json.dumps({
-        "inputText": text,
-        "dimensions": 1024,
-        "normalize": True
-    })
-
     try:
-        response = bedrock.invoke_model(
-            body=body,
-            modelId=model_id,
-            accept="application/json",
-            contentType="application/json"
+        response = openai_client.embeddings.create(
+            model="text-embedding-3-small",
+            input=text,
+            dimensions=1536
         )
-        response_body = json.loads(response.get('body').read())
-        return response_body['embedding']
+        return response.data[0].embedding
     except Exception as e:
         logger.error(f"Embedding generation failed: {e}")
         return None
@@ -97,14 +91,15 @@ def compute_content_hash(content):
         return None
     return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
-def process_single_chunk(bedrock, supabase, benefit_id, serv_id, chunk_content, chunk_index):
+def process_single_chunk(openai_client, supabase, benefit_id, serv_id, chunk_content, chunk_index):
     """
     Generate embedding for a single chunk and save to DB.
     """
-    embedding = generate_embedding(bedrock, chunk_content)
+    embedding = generate_embedding(openai_client, chunk_content)
     
     if embedding:
         data = {
+            "category": "WELFARE",  # 복지 전용 ⭐
             "benefit_id": benefit_id,
             # "serv_id": serv_id, # Column does not exist in benefit_embeddings table
             "content_chunk": chunk_content, # Correct column name: content_chunk
@@ -162,13 +157,13 @@ def compute_source_hash(item):
 
 def summarize_with_haiku(bedrock, item_data):
     """
-    Summarize benefit information using Claude 3 Haiku.
-    Returns markdown formatted string.
-    """
-    model_id = "anthropic.claude-3-haiku-20240307-v1:0"
+    Create embedding content by combining original fields WITHOUT LLM.
+    Returns plain text (no markup, no emojis) for optimal embedding quality.
     
+    ⚠️ 함수명은 호환성을 위해 유지하지만, 이제 LLM을 사용하지 않습니다.
+    """
     # Prepare Input Data (Handle None values safely)
-    def clean(val, default="정보 없음"):
+    def clean(val, default=""):
         if val is None:
             return default
         s = str(val).strip()
@@ -176,205 +171,79 @@ def summarize_with_haiku(bedrock, item_data):
             return default
         return s
 
-    ctpv = item_data.get('ctpv_nm')
-    sgg = item_data.get('sgg_nm')
-    location_raw = f"{ctpv or ''} {sgg or ''}".strip()
-    location = location_raw if location_raw else "전국"
+    # ============================================
+    # Option A: 최소한 필드만 임베딩 (핵심 서비스 내용)
+    # ============================================
+    # 포함: 서비스명, 요약, 지원내용, 개요, 제공유형, 지원주기, 신청방법, 신청절차
+    # 제외: 지역, 생애주기, 대상특성, 기간, 주제 (DB 필터링으로 처리)
+    # 
+    # 효과:
+    # - 임베딩 토큰 50% 감소 (비용 절감)
+    # - 검색 품질 유지 (핵심만 포함)
+    # - 가독성 향상 (중복 제거)
+    # ============================================
     
+    parts = []
+    
+    # 1. 서비스명 (필수)
     serv_nm = clean(item_data.get('serv_nm'))
-    sprt_cyc_nm = clean(item_data.get('sprt_cyc_nm'))
-    srv_pvsn_nm = clean(item_data.get('srv_pvsn_nm'))
-    aply_mtd_nm = clean(item_data.get('aply_mtd_nm'), "")
+    if serv_nm:
+        parts.append(f"서비스명: {serv_nm}")
     
-    trgter_indvdl_nm_array = clean(item_data.get('trgter_indvdl_nm_array'), "")
-    life_nm_array = clean(item_data.get('life_nm_array'), "")
-    target_detail = clean(item_data.get('target_detail'), "")
-    select_criteria = clean(item_data.get('select_criteria'), "")
+    # 2. 서비스 요약 (이미 요약됨! - 가장 중요)
+    serv_dgst = clean(item_data.get('serv_dgst'))
+    if serv_dgst:
+        parts.append(f"요약: {serv_dgst}")
     
-    intrs_thema_nm_array = clean(item_data.get('intrs_thema_nm_array'), "복지")
+    # 3. 복지정보 개요 (중앙부처만)
+    wlfare_info = clean(item_data.get('wlfare_info_outl_cn'))
+    if wlfare_info:
+        parts.append(f"개요: {wlfare_info}")
     
-    # Combine content fields for richer context
-    content_parts = []
-    if item_data.get('serv_dgst'): content_parts.append(f"요약: {item_data.get('serv_dgst')}")
-    if item_data.get('wlfare_info_outl_cn'): content_parts.append(f"개요: {item_data.get('wlfare_info_outl_cn')}")
-    if item_data.get('service_content'): content_parts.append(f"상세: {item_data.get('service_content')}")
+    # 4. 상세 내용 (핵심! - 구체적 금액, 조건 등)
+    service_content = clean(item_data.get('service_content'))
+    if service_content:
+        parts.append(f"지원내용: {service_content}")
     
-    service_content = "\n".join(content_parts) if content_parts else "상세 내용 참조"
+    # 5. 제공유형 (사용자 검색 패턴: "현금", "카드")
+    srv_pvsn = clean(item_data.get('srv_pvsn_nm'))
+    if srv_pvsn:
+        parts.append(f"제공유형: {srv_pvsn}")
     
-    apply_method_detail = clean(item_data.get('apply_method_detail'), "")
-
+    # 6. 지원주기 (사용자 검색 패턴: "매월", "1회성")
+    sprt_cyc = clean(item_data.get('sprt_cyc_nm'))
+    if sprt_cyc:
+        parts.append(f"지원주기: {sprt_cyc}")
     
-    # Parse Contact Info
-    contact_info_raw = item_data.get('contact_info')
-    contact_list = []
+    # 7. 신청방법 (사용자 검색 패턴: "온라인", "방문")
+    apply_method = clean(item_data.get('aply_mtd_nm'))
+    if apply_method:
+        parts.append(f"신청방법: {apply_method}")
     
-    if contact_info_raw:
-        try:
-             # Handle multiple types (list of objects, json string, or single dict)
-            contacts = []
-            if isinstance(contact_info_raw, list):
-                contacts = contact_info_raw
-            elif isinstance(contact_info_raw, str):
-                try:
-                    parsed = json.loads(contact_info_raw)
-                    contacts = parsed if isinstance(parsed, list) else [parsed]
-                except:
-                    # Maybe it's not JSON, just a string?
-                    pass
-            else:
-                 contacts = [contact_info_raw]
-            
-            for c in contacts:
-                # If c is still string (broken json?), skip
-                if not isinstance(c, dict): 
-                    continue
-
-                # Type A: servSeDetailNm / servSeDetailLink
-                name_a = c.get('servSeDetailNm')
-                phone_a = c.get('servSeDetailLink')
-                
-                # Type B: wlfareInfoReldNm / wlfareInfoReldCn
-                name_b = c.get('wlfareInfoReldNm')
-                phone_b = c.get('wlfareInfoReldCn')
-                
-                name = name_a or name_b
-                phone = phone_a or phone_b
-                
-                if name:
-                    clean_name = str(name).strip()
-                    clean_phone = str(phone).strip() if phone else "연락처 없음"
-                    contact_list.append(f"{clean_name} ({clean_phone})")
-                    
-        except Exception as e:
-            logger.warning(f"Failed to parse contact_info for {serv_nm}: {e}")
-
-    contact_str = ", ".join(contact_list) if contact_list else "문의처 정보 없음"
-
-    # Extract Period
-    bgng = clean(item_data.get('enfc_bgng_ymd'), "")
-    end = clean(item_data.get('enfc_end_ymd'), "")
+    # 8. 신청절차 (구체적 방법: "정부24", "행정복지센터")
+    apply_method_detail = clean(item_data.get('apply_method_detail'))
+    if apply_method_detail:
+        parts.append(f"신청절차: {apply_method_detail}")
     
-    period_str = "정보 없음"
-    if bgng or end:
-        if end == '9999-12-31':
-             period_str = f"{bgng} ~ (계속)" if bgng else "(계속)"
-        elif bgng and end:
-             period_str = f"{bgng} ~ {end}"
-        elif bgng:
-             period_str = f"{bgng} ~ (계속)"
-        elif end:
-             period_str = f"~ {end}"
-    else:
-        period_str = "별도 공지 / 상시"
-
-    # --- 1. Prepare Content for LLM (Benefit Description ONLY) ---
-    benefit_context_parts = []
-    if item_data.get('serv_dgst'):
-        benefit_context_parts.append(f"[서비스 요약]\n{item_data.get('serv_dgst')}")
-    if item_data.get('wlfare_info_outl_cn'):
-        benefit_context_parts.append(f"[복지정보 개요]\n{item_data.get('wlfare_info_outl_cn')}")
-    if item_data.get('service_content'):
-        benefit_context_parts.append(f"[상세 내용]\n{item_data.get('service_content')}")
+    # ============================================
+    # 최종 결합 (순수 텍스트, 줄바꿈으로 구분)
+    # - 임베딩 품질: 약간 향상 (구조화된 정보 인식)
+    # - 가독성: 대폭 향상 (디버깅/검증 시 편리)
+    # ============================================
+    final_content = "\n".join(parts)
     
-    benefit_raw_text = "\n\n".join(benefit_context_parts)
+    # Fallback
+    if not final_content.strip():
+        final_content = f"서비스명: {item_data.get('serv_nm', '정보없음')}"
     
-    # If there is absolutely no content, provide a fallback
-    if not benefit_raw_text.strip():
-        benefit_summary = "상세 지원 내용이 공고에 명시되지 않았습니다. 문의처를 통해 확인해주세요."
-    else:
-        # LLM Call - Just for Benefit Synthesis
-        system_prompt = """당신은 복지 혜택의 다양한 상세 설명들을 종합하여, 명확하고 이해하기 쉬운 핵심 '지원 내용'으로 요약하는 전문가입니다.
-중복된 내용을 제거하고, 사용자가 '어떤 서비스이며, 어떤 혜택을 받을 수 있는지' 바로 알 수 있도록 자연스러운 문장으로 정리하세요.
-대상 자격이나 신청 방법은 언급하지 마세요. 오직 '어떤 서비스 이고, 어떤 혜택 자체'에만 집중하세요.
-"""
-        user_message = f"""다음 혜택의 내용을 요약해줘:
+    return final_content
 
-[서비스명]: {serv_nm}
-
-{benefit_raw_text}
-"""
-        
-        body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1000, # Reduced tokens
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": user_message}],
-            "temperature": 0.0
-        })
-
-        # LLM Call - Just for Benefit Synthesis
-        max_llm_retries = 15
-        llm_retry_delay = 3
-        benefit_summary = None
-
-        for llm_attempt in range(max_llm_retries):
-            try:
-                response = bedrock.invoke_model(
-                    body=body,
-                    modelId=model_id,
-                    accept="application/json",
-                    contentType="application/json"
-                )
-                response_body = json.loads(response.get('body').read())
-                benefit_summary = response_body['content'][0]['text']
-                break # Success
-            except Exception as e:
-                is_last_llm_attempt = (llm_attempt == max_llm_retries - 1)
-                if is_last_llm_attempt:
-                    logger.error(f"LLM Summarization failed for {item_data.get('serv_nm')} after {max_llm_retries} attempts: {e}")
-                    benefit_summary = benefit_raw_text[:1000] # Fallback
-                else:
-                    # Exponential backoff for LLM call
-                    sleep_time = (llm_retry_delay * (2 ** llm_attempt)) + random.uniform(0, 1)
-                    time.sleep(sleep_time)
-            
-    # --- 2. Construct Final Document Programmatically ---
-    
-    # Section 1: Target
-    # Combine array fields and text fields
-    target_info_parts = []
-    target_info_parts.append(f"- **대상**: {trgter_indvdl_nm_array} {life_nm_array}")
-    target_info_parts.append(f"- **지역**: {location}")
-    target_info_parts.append(f"- **기간**: {period_str}")
-    
-    target_info_parts.append(f"- **지원대상 상세**: {target_detail}")
-    target_info_parts.append(f"- **선정기준**: {select_criteria}")
-        
-    target_section = "\n".join(target_info_parts)
-
-    # Section 3: Apply
-    apply_info_parts = []
-    apply_info_parts.append(f"- **방법**: {aply_mtd_nm}")
-    apply_info_parts.append(f"- **문의**: {contact_str}")
-        
-    if apply_method_detail != "":
-        apply_info_parts.append(f"- **신청방법 상세**: {apply_method_detail}")
-        
-    apply_section = "\n".join(apply_info_parts)
-
-    # Final Assembly
-    final_document = f"""# {serv_nm}
-
-# 1. 🎯 지원 대상 및 조건
-{target_section}
-
-# 2. 🎁 혜택 내용
-[{intrs_thema_nm_array}]
-- **제공유형**: {srv_pvsn_nm} 
-- **지원주기**: {sprt_cyc_nm}
-- **내용**:
-{benefit_summary}
-
-# 3. 📝 신청 및 이용 방법
-{apply_section}
-"""
-
-    return final_document
-
-def process_summary_and_update(bedrock, supabase, benefit):
+def process_summary_and_update(supabase, benefit):
     """
-    Helper function to summarize a single benefit and update DB.
+    Helper function to create embedding content and update DB.
     Returns (benefit_id, new_content, new_hash) if successful, else (benefit_id, None, None).
+    
+    ⚠️ bedrock 파라미터 제거됨 - 더 이상 LLM 사용 안 함
     """
     benefit_id = benefit['id']
     serv_id = benefit['serv_id']
@@ -384,27 +253,19 @@ def process_summary_and_update(bedrock, supabase, benefit):
 
     for attempt in range(max_retries):
         try:
-            # Generate Summary
-            summary = summarize_with_haiku(bedrock, benefit)
-            #print(summary)
-            
-            # Append Link
-            serv_dtl_link = benefit.get('serv_dtl_link')
-            if serv_dtl_link:
-                summary = f"{summary}\n\n# 4. 🌐 상세 보기 (공식 공고)\n- [복지로 공고문 바로가기]({serv_dtl_link})"
-            else:
-                 summary = f"{summary}\n\n# 4. 🌐 상세 보기 (공식 공고)\n- 링크 정보 없음"
+            # Create embedding content (no LLM, just plain text combination)
+            content = summarize_with_haiku(None, benefit)  # bedrock 사용 안 함
 
             # Update content in DB
             # We save the SOURCE hash as 'content_hash' so we know this version of source data is processed.
             source_hash = compute_source_hash(benefit)
             
             supabase.table("benefits").update({
-                "content_for_embedding": summary
+                "content_for_embedding": content
                 # content_hash update is deferred to ensuring atomicity
             }).eq("id", benefit_id).execute()
             
-            return benefit_id, summary, source_hash
+            return benefit_id, content, source_hash
             
         except Exception as e:
             is_last_attempt = (attempt == max_retries - 1)
@@ -426,7 +287,7 @@ def main():
     logger.info(f"Parallel processing enabled: {MAX_WORKERS} workers")
     
     supabase = get_supabase_client()
-    bedrock = get_bedrock_client()
+    openai_client = get_openai_client()
     
     # 1. Fetch benefits that need embeddings
     limit = 50 # Reduced for better feedback and safety
@@ -489,7 +350,7 @@ def main():
             logger.info(f"Summarizing {len(benefits_to_summarize)} benefits (Source Changed)...")
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = [
-                    executor.submit(process_summary_and_update, bedrock, supabase, b) 
+                    executor.submit(process_summary_and_update, supabase, b) 
                     for b in benefits_to_summarize
                 ]
                 
@@ -552,7 +413,7 @@ def main():
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = []
                 for task in tasks:
-                    futures.append(executor.submit(process_single_chunk, bedrock, supabase, *task))
+                    futures.append(executor.submit(process_single_chunk, openai_client, supabase, *task))
                 
                 for future in as_completed(futures):
                     if future.result():

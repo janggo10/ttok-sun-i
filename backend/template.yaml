@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: 똑순이 서버리스 백엔드 (Supabase + AWS Bedrock)
+Description: 똑순이 서버리스 백엔드 (Supabase + AWS Bedrock) - Python 3.11 Updated
 
 # ============================================================
 # 파라미터 (배포 시 설정 가능)
@@ -38,6 +38,11 @@ Parameters:
     Description: 행정안전부 API 키
     Default: ""
 
+  OpenAIApiKey:
+    Type: String
+    NoEcho: true
+    Description: OpenAI API Key for text-embedding-3-small
+
   MoisApiUrl:
     Type: String
     Description: 행정안전부 API URL
@@ -66,7 +71,11 @@ Globals:
         SLACK_MONITORING_WEBHOOK: "https://hooks.slack.com/services/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"
         SLACK_ERROR_WEBHOOK: "https://hooks.slack.com/services/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"
         
+        # OpenAI 설정
+        OPENAI_API_KEY: !Ref OpenAIApiKey
+        
         # 공공 API 키
+        BOKJIRO_API_KEY: !Ref Bojogeum24ApiKey
         BOJOGEUM24_API_KEY: !Ref Bojogeum24ApiKey
         MOIS_API_KEY: !Ref MoisApiKey
   
@@ -80,30 +89,22 @@ Globals:
 # 리소스 정의
 # ============================================================
 Resources:
-  # 공통 모듈 Lambda Layer
-  CommonLayer:
-    Type: AWS::Serverless::LayerVersion
-    Properties:
-      LayerName: ttok-sun-i-common
-      Description: 공통 모듈 (Supabase, Slack 등)
-      ContentUri: layer/
-      CompatibleRuntimes:
-        - python3.11
-    Metadata:
-      BuildMethod: python3.11
-
   # 1. 카카오 챗봇 웹훅 핸들러
   KakaoWebhookFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: ttok-sun-i-kakao-webhook
-      Description: 카카오톡 챗봇 메시지 처리 및 RAG 응답
+      Description: 카카오톡 챗봇 메시지 처리 및 RAG 응답 (OpenAI v2026-02-01)
       CodeUri: functions/kakao_webhook/
       Handler: app.lambda_handler
       Timeout: 30
-      MemorySize: 512
-      Layers:
-        - !Ref CommonLayer
+      MemorySize: 256
+      AutoPublishAlias: live
+      # Provisioned Concurrency (완벽한 Cold Start 제거)
+      # 비용: 256MB 기준 ~$6.5/월 (메모리 최적화로 50% 절감!)
+      # 활성화 방법: 아래 2줄 주석 해제
+      # ProvisionedConcurrencyConfig:
+      #   ProvisionedConcurrentExecutions: 1
       Policies:
         - Statement:
           - Effect: Allow
@@ -129,8 +130,7 @@ Resources:
       Handler: app.lambda_handler
       Timeout: 900  # 15분
       MemorySize: 1024
-      Layers:
-        - !Ref CommonLayer
+      AutoPublishAlias: live
       Policies:
         - Statement:
           - Effect: Allow
@@ -169,8 +169,7 @@ Resources:
       Handler: app.lambda_handler
       Timeout: 10
       MemorySize: 128
-      Layers:
-        - !Ref CommonLayer
+      AutoPublishAlias: live
       Events:
         WeeklySchedule:
           Type: Schedule
@@ -206,8 +205,7 @@ Resources:
       Handler: app.lambda_handler
       Timeout: 900
       MemorySize: 512
-      Layers:
-        - !Ref CommonLayer
+      AutoPublishAlias: live
       Environment:
         Variables:
           SUPABASE_URL: !Ref SupabaseUrl
@@ -223,6 +221,33 @@ Resources:
             # 매 분기(1,4,7,10월) 1일 오전 4시 KST (전일 19:00 UTC)
             Schedule: cron(0 19 31 3,6,9,12 ? *)
             Enabled: true
+
+  # 6. Lambda Warming (Cold Start 방지) - 테스트 중 비활성화 ⚠️
+  # 📋 서비스 오픈 시 활성화 방법:
+  #   1. 아래 KakaoWebhookWarmingRule과 KakaoWebhookWarmingPermission의 주석 제거
+  #   2. sam deploy --no-confirm-changeset --force-upload
+  # 💰 비용: ~$0.05/월 (거의 무료)
+  # 🎯 효과: Cold Start 95%+ 제거
+  
+  # KakaoWebhookWarmingRule:
+  #   Type: AWS::Events::Rule
+  #   Properties:
+  #     Name: ttok-sun-i-kakao-webhook-warming
+  #     Description: "1분마다 Lambda를 호출하여 Cold Start 방지 (최적화)"
+  #     ScheduleExpression: "rate(1 minute)"
+  #     State: ENABLED
+  #     Targets:
+  #       - Arn: !GetAtt KakaoWebhookFunction.Arn
+  #         Id: "KakaoWarmingTarget"
+  #         Input: '{"warming": true}'
+  # 
+  # KakaoWebhookWarmingPermission:
+  #   Type: AWS::Lambda::Permission
+  #   Properties:
+  #     FunctionName: !Ref KakaoWebhookFunction
+  #     Action: lambda:InvokeFunction
+  #     Principal: events.amazonaws.com
+  #     SourceArn: !GetAtt KakaoWebhookWarmingRule.Arn
 
 # ============================================================
 # 출력값

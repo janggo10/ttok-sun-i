@@ -3,19 +3,28 @@ import os
 import sys
 from datetime import datetime
 
-# Add layer path for local testing (virtualenv) or Lambda layer
-# Assuming standard structure where common is accessible
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
+# Python 3.11 업데이트 - 2026-01-31
+# OpenAI text-embedding-3-small 전환 완료 + 상세 로그 (지역/생애주기/대상) - 2026-02-01 v29
+# common 모듈 파일들이 같은 디렉토리에 있음
+
+# 전역 변수로 클라이언트 재사용 (Cold Start 최적화)
+_supabase_client = None
+_rag_service = None
 
 try:
-    from common.supabase_client import SupabaseClient
-except ImportError:
-    # Fallback for different execution environments
+    from supabase_client import SupabaseClient
+    from rag_service import RAGService
+except ImportError as e:
+    print(f"❌ Import Error: {e}")
+    print(f"📂 sys.path: {sys.path}")
+    print(f"📁 Current dir: {os.path.dirname(__file__) or '.'}")
     try:
-        from backend.common.supabase_client import SupabaseClient
-    except ImportError:
-        print("Warning: SupabaseClient import failed. DB operations will fail.")
-        SupabaseClient = None
+        import glob
+        files = glob.glob(os.path.join(os.path.dirname(__file__) or '.', '*.py'))
+        print(f"📁 Python files: {[os.path.basename(f) for f in files]}")
+    except:
+        pass
+    raise ImportError(f"Failed to import common modules: {e}")
 
 # ----------------------------------------------------
 # Main Handler with DB-State Logic
@@ -25,6 +34,12 @@ def lambda_handler(event, context):
     """
     KakaoTalk Chatbot Webhook Handler (Stateless -> DB Stateful)
     """
+    global _supabase_client, _rag_service
+    
+    # Warming 요청 처리 (Cold Start 방지용)
+    if event.get('warming'):
+        return {'statusCode': 200, 'body': json.dumps({'status': 'warmed'})}
+    
     print(f"Event: {json.dumps(event, ensure_ascii=False)}")
     
     try:
@@ -49,13 +64,34 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"DB Fetch Error: {e}")
 
-    # 2. Determine Current State & Reset Logic
-    # If user says "시작하기", "처음으로" -> Reset DB State
-    if utterance in ['시작하기', '처음으로', '안녕', '리셋']:
-        reset_user_state(supabase, user_id)
+    # 2. Handle Special Commands
+    print(f"💬 Utterance: '{utterance}'")
+    print(f"👤 User exists: {user is not None}")
+    
+    # "시작하기" / "안녕" - 신규 가입자용
+    if utterance in ['시작하기', '안녕']:
+        if not user:
+            # 신규 회원: 온보딩 시작
+            create_initial_user(supabase, user_id)
+            return api_response(response_select_city())
+        else:
+            # 기존 회원: 이미 가입됨 안내
+            return api_response(simple_text_response(
+                "이미 가입하셨습니다! 😊\n\n"
+                "정보를 다시 입력하려면 '처음으로'를 입력하세요."
+            ))
+    
+    # "처음으로" / "리셋" - 정보 재입력 (디버깅용)
+    if utterance in ['처음으로', '리셋']:
+        if user:
+            # 기존 회원: 정보 초기화 후 온보딩 재시작
+            reset_user_state(supabase, user_id)
+        else:
+            # 신규 회원: 온보딩 시작
+            create_initial_user(supabase, user_id)
         return api_response(response_select_city())
-        
-    # If New User -> Create and Ask City
+    
+    # 신규 회원 (특수 명령어 없이 메시지 입력)
     if not user:
         create_initial_user(supabase, user_id)
         return api_response(response_select_city())
@@ -125,19 +161,48 @@ def lambda_handler(event, context):
             gender = None
             
         if gender:
-            # Complete!
-            update_user_field(supabase, user_id, {
-                'gender': gender, 
-                'is_active': True,
-                # Resolve region code here for completeness
-                'region_code': resolve_region_code(supabase, user['ctpv_nm'], user['sgg_nm'])
-            })
-            return api_response(simple_text_response(f"반갑습니다! 🎉\n\n- 지역: {user['ctpv_nm']} {user['sgg_nm']}\n- 출생: {user.get('birth_year')}년\n- 성별: {'남성' if gender=='M' else '여성'}\n\n등록이 완료되었습니다.\n이제 '혜택 추천해줘' 라고 말씀하시면 딱 맞는 복지 혜택을 찾아드릴게요!"))
+            # Save gender and move to target_group selection
+            update_user_field(supabase, user_id, {'gender': gender})
+            return api_response(response_select_target_group(user['ctpv_nm'], user['sgg_nm'], user['birth_year']))
         else:
             return api_response(response_select_gender(user['ctpv_nm'], user['sgg_nm'], user['birth_year']))
+    
+    # State: Wait for Target Group (대상 특성)
+    if user.get('target_group') is None:
+        # Parse target_group from utterance
+        target_group = parse_target_group(utterance)
+        
+        if target_group is not None:  # 선택 완료 (빈 배열 포함)
+            # Calculate life_cycle from birth_year
+            life_cycle = RAGService.convert_birth_year_to_life_cycle(user['birth_year'])
+            
+            # Complete onboarding!
+            update_user_field(supabase, user_id, {
+                'target_group': target_group,
+                'life_cycle': life_cycle,
+                'is_active': True,
+                'region_code': resolve_region_code(supabase, user['ctpv_nm'], user['sgg_nm'])
+            })
+            
+            # 온보딩 완료 메시지 + 자동 검색 🎉
+            user['target_group'] = target_group
+            user['life_cycle'] = life_cycle
+            user['is_active'] = True
+            
+            completion_msg = f"🎉 등록이 완료되었습니다!\n\n" \
+                           f"📍 지역: {user['ctpv_nm']} {user['sgg_nm']}\n" \
+                           f"🎂 출생: {user['birth_year']}년 ({', '.join(life_cycle)})\n" \
+                           f"👤 성별: {'남성' if user['gender']=='M' else '여성'}\n" \
+                           f"🎯 대상: {', '.join(target_group) if target_group else '일반'}\n\n" \
+                           f"회원님께 맞는 혜택을 찾고 있습니다... 🔍"
+            
+            # 자동 검색 실행
+            return handle_search_query(supabase, user, "맞춤 혜택 추천", auto_search=True)
+        else:
+            return api_response(response_select_target_group(user['ctpv_nm'], user['sgg_nm'], user['birth_year']))
 
-    # If all fields exist -> Already Onboarded
-    return api_response(simple_text_response(f"이미 등록된 사용자입니다.\n혜택을 찾으시려면 '혜택 추천'이라고 말씀해주세요.\n\n(정보를 수정하려면 '처음으로' 라고 말씀해주세요.)"))
+    # Onboarding Complete - Handle User Query
+    return handle_search_query(supabase, user, utterance)
 
 
 def api_response(response_data):
@@ -155,8 +220,14 @@ def create_initial_user(supabase, user_id):
     default_region_code = get_default_region_code(supabase)
     supabase.table('users').upsert({
         'kakao_user_id': user_id,
-        'ctpv_nm': '', 'sgg_nm': '', 'birth_year': 0, 'gender': '', 
-        'region_code': default_region_code, 'region_depth': 0,
+        'ctpv_nm': '', 
+        'sgg_nm': '', 
+        'birth_year': 0, 
+        'gender': '', 
+        'target_group': None,  # None = not set yet
+        'life_cycle': None,    # Will be calculated from birth_year
+        'region_code': default_region_code,
+        'region_depth': 2,  # Default: 시군구 레벨
         'is_active': False
     }).execute()
 
@@ -167,8 +238,14 @@ def update_user_field(supabase, user_id, data):
 def reset_user_state(supabase, user_id):
     default_region_code = get_default_region_code(supabase)
     supabase.table('users').update({
-        'ctpv_nm': '', 'sgg_nm': '', 'birth_year': 0, 'gender': '', 
-        'region_code': default_region_code, 'region_depth': 0,
+        'ctpv_nm': '', 
+        'sgg_nm': '', 
+        'birth_year': 0, 
+        'gender': '', 
+        'target_group': None,
+        'life_cycle': None,
+        'region_code': default_region_code,
+        'region_depth': 2,  # Default: 시군구 레벨
         'is_active': False
     }).eq('kakao_user_id', user_id).execute()
 
@@ -232,6 +309,25 @@ def response_select_gender(city, sgg, birth_year):
     ]
     return build_response(f"성별을 선택해주세요.", quick_replies)
 
+def response_select_target_group(city, sgg, birth_year):
+    """대상 특성 선택 (복지 혜택 필터링에 중요)"""
+    target_options = [
+        "저소득층",
+        "장애인",
+        "한부모가족",
+        "다자녀가족",
+        "다문화가족",
+        "북한이탈주민",
+        "국가유공자",
+        "해당없음"
+    ]
+    quick_replies = [{"label": opt, "action": "message", "messageText": opt} for opt in target_options]
+    msg = f"🎯 **대상 특성**을 선택해주세요.\n\n" \
+          f"해당되는 항목이 있으면 선택하시면\n" \
+          f"더 많은 맞춤 혜택을 받으실 수 있습니다.\n\n" \
+          f"💡 해당 사항이 없으시면 '해당없음'을 선택해주세요."
+    return build_response(msg, quick_replies)
+
 
 
 # ----------------------------------------------------
@@ -294,3 +390,201 @@ def simple_text_response(text):
             ]
         }
     }
+
+def parse_target_group(utterance):
+    """
+    Parse target_group from user utterance.
+    Returns:
+        - list: Selected target groups (can be empty list for '해당없음')
+        - None: Parsing failed, ask again
+    """
+    utterance_lower = utterance.lower().strip()
+    
+    # 해당없음
+    if '해당없음' in utterance or '없음' in utterance or '해당사항없음' in utterance or '일반' in utterance:
+        return []  # Empty array = 일반인
+    
+    # Map keywords to target_group values
+    target_mapping = {
+        '저소득': '저소득층',
+        '장애': '장애인',
+        '한부모': '한부모가족',
+        '다자녀': '다자녀가족',
+        '다문화': '다문화가족',
+        '북한이탈': '북한이탈주민',
+        '탈북': '북한이탈주민',
+        '국가유공': '국가유공자',
+        '보훈': '국가유공자'
+    }
+    
+    selected = []
+    for keyword, value in target_mapping.items():
+        if keyword in utterance:
+            selected.append(value)
+    
+    if selected:
+        return selected
+    
+    # Could not parse
+    return None
+
+def handle_search_query(supabase, user, query, auto_search=False):
+    """
+    Handle user query using RAG service.
+    
+    Args:
+        supabase: Supabase client
+        user: User profile dict
+        query: User's query text
+        auto_search: If True, this is an automatic search after onboarding
+    """
+    try:
+        # Validate user profile
+        if not user.get('is_active'):
+            return api_response(simple_text_response("먼저 회원 정보를 등록해주세요."))
+        
+        # Initialize RAG Service (환경변수에서 Supabase 자동 초기화)
+        rag_service = RAGService()
+        
+        # Build user profile for RAG
+        user_profile = {
+            'ctpv_nm': user.get('ctpv_nm'),
+            'sgg_nm': user.get('sgg_nm'),
+            'birth_year': user.get('birth_year'),
+            'gender': user.get('gender'),
+            'life_cycle': user.get('life_cycle', []),
+            'target_group': user.get('target_group', [])
+        }
+        
+        # Search for services (디버깅용: top_k=30)
+        results = rag_service.get_recommended_services(
+            query_text=query,  # ← query_text로 수정!
+            user_profile=user_profile,
+            top_k=30  # 디버깅용 최대 개수
+        )
+        
+        if not results:
+            return api_response(simple_text_response(
+                "죄송합니다. 😢\n\n"
+                "현재 조건에 맞는 혜택을 찾지 못했습니다.\n\n"
+                "다른 질문이나 키워드로 다시 시도해보시거나,\n"
+                "'처음으로' 라고 말씀하시면 정보를 수정할 수 있습니다."
+            ))
+        
+        # Format results (Option B: 상세 정보 표시 - 디버깅용)
+        response_text = f"🎯 찾은 혜택: **{len(results)}개**\n\n"
+        
+        for idx, benefit in enumerate(results, 1):
+            # Source type 표시 (벡터 검색 vs 자격 기반 필터)
+            source_type = benefit.get('source_type', 'UNKNOWN')
+            serv_nm = benefit.get('serv_nm', '제목 없음')
+            similarity = benefit.get('similarity')
+            
+            # 지역 정보
+            ctpv_nm = benefit.get('ctpv_nm', '')
+            sgg_nm = benefit.get('sgg_nm', '')
+            region_str = f"{ctpv_nm} {sgg_nm}".strip() if ctpv_nm or sgg_nm else "전국"
+            
+            # 생애주기 정보
+            life_cycles = benefit.get('life_nm_array')
+            life_str = ', '.join(life_cycles) if life_cycles and len(life_cycles) > 0 else "전체"
+            
+            # 대상 정보
+            targets = benefit.get('trgter_indvdl_nm_array')
+            target_str = ', '.join(targets) if targets and len(targets) > 0 else "전국민"
+            
+            # 디버깅: 서비스명, source_type, 유사도 점수, 지역, 생애주기, 대상 출력
+            if source_type == 'VECTOR' and similarity is not None:
+                print(f"[DEBUG] Benefit {idx}: {source_type}({similarity:.3f}) | 지역={region_str} | 생애주기=[{life_str}] | 대상=[{target_str}] | '{serv_nm}'")
+            else:
+                print(f"[DEBUG] Benefit {idx}: {source_type} | 지역={region_str} | 생애주기=[{life_str}] | 대상=[{target_str}] | '{serv_nm}' ")
+            
+            if source_type == 'VECTOR':
+                source_icon = "🔍"
+                # 유사도 점수 표시 (벡터 검색인 경우)
+                similarity = benefit.get('similarity')
+                if similarity is not None:
+                    source_label = f"[AI검색 {similarity:.2f}]"
+                else:
+                    source_label = "[AI검색]"
+            elif source_type == 'RULES':
+                source_icon = "📋"
+                source_label = "[자격기반]"
+            else:
+                source_icon = "❓"
+                source_label = f"[{source_type}]"
+            
+            response_text += f"**{source_icon}{idx}. {benefit.get('serv_nm', '제목 없음')}** {source_label}\n"
+            response_text += f"🆔 ID: {benefit.get('id', 'N/A')}\n"
+            response_text += f"📍 {benefit.get('ctpv_nm', '')} {benefit.get('sgg_nm', '')}\n"
+            
+            # 대상 특성 (배열)
+            targets = benefit.get('trgter_indvdl_nm_array')
+            if targets and len(targets) > 0:
+                response_text += f"👥 대상: {', '.join(targets)}\n"
+            else:
+                response_text += f"👥 대상: 전국민\n"
+            
+            # 생애주기 (디버깅용)
+            life_cycles = benefit.get('life_nm_array')
+            if life_cycles and len(life_cycles) > 0:
+                response_text += f"📅 생애주기: {', '.join(life_cycles)}\n"
+            else:
+                response_text += f"📅 생애주기: 전국민\n"
+            
+            # 서비스 요약
+            if benefit.get('serv_dgst'):
+                desc = benefit['serv_dgst']
+                if len(desc) > 150:
+                    desc = desc[:150] + "..."
+                response_text += f"📝 {desc}\n"
+            
+            # 상세 내용 (접기 형태로 추가)
+            service_content = benefit.get('service_content')
+            if service_content:
+                # 300자 제한 (너무 길면 잘라내기)
+                if len(service_content) > 300:
+                    service_content = service_content[:300] + "..."
+                response_text += f"\n💡 상세내용:\n{service_content}\n"
+            
+            # 마감일
+            if benefit.get('enfc_end_ymd'):
+                response_text += f"⏰ 마감: {benefit['enfc_end_ymd']}\n"
+            
+            # 상세 링크
+            response_text += f"🔗 상세: {benefit.get('serv_dtl_link', '정보 없음')}\n"
+            response_text += "\n" + "─" * 30 + "\n\n"
+        
+        # 온보딩 직후 vs 일반 검색에 따라 다른 안내 메시지
+        if auto_search:
+            response_text += "💬 궁금한 혜택을 아래 버튼을 눌러 질문해보세요!"
+            
+            # 온보딩 완료 후: 예시 질문 버튼
+            quick_replies = [
+                {"label": "청년 일자리 지원", "action": "message", "messageText": "청년 일자리 지원금 알려줘"},
+                {"label": "육아 지원", "action": "message", "messageText": "육아 지원 혜택 있어?"},
+                {"label": "주거비 지원", "action": "message", "messageText": "주거비 지원 받을 수 있을까?"},
+                {"label": "처음으로", "action": "message", "messageText": "처음으로"}
+            ]
+        else:
+            response_text += "💬 다른 혜택을 찾으시려면 아래 버튼을 눌러주세요!"
+            
+            # 일반 질문 후: 간단한 액션 버튼
+            quick_replies = [
+                {"label": "다른 혜택 찾기", "action": "message", "messageText": "다른 혜택 알려줘"},
+                {"label": "처음으로", "action": "message", "messageText": "처음으로"}
+            ]
+        
+        return api_response(build_response(response_text, quick_replies))
+        
+    except Exception as e:
+        print(f"❌ Error in handle_search_query: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        return api_response(simple_text_response(
+            "죄송합니다. 😢\n\n"
+            "혜택 검색 중 오류가 발생했습니다.\n\n"
+            f"오류 내용: {str(e)}\n\n"
+            "잠시 후 다시 시도해주세요."
+        ))
