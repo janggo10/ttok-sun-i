@@ -5,7 +5,7 @@ import os
 
 # common 모듈 파일들이 같은 디렉토리에 있음
 try:
-    from supabase_client import SupabaseClient
+from supabase_client import SupabaseClient
 except ImportError as e:
     print(f"❌ Import Error: {e}")
     raise ImportError(f"Failed to import common modules: {e}")
