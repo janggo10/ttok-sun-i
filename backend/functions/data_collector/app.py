@@ -23,11 +23,11 @@ def lambda_handler(event, context):
     """
     print("Starting Data Collector Job...")
     
-    # Use BOKJIRO_API_KEY as primary since user confirmed it works
-    api_key = os.environ.get('BOKJIRO_API_KEY') or os.environ.get('BOJOGEUM24_API_KEY')
+    # Use PUBLIC_DATA_PORTAL_API_KEY (unified key for all public data APIs)
+    api_key = os.environ.get('PUBLIC_DATA_PORTAL_API_KEY')
     
     if not api_key:
-        print("Error: BOKJIRO_API_KEY is missing.")
+        print("Error: PUBLIC_DATA_PORTAL_API_KEY is missing.")
         return {'statusCode': 500, 'body': 'API Key Missing'}
 
     total_count = 0

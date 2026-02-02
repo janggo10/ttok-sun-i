@@ -70,7 +70,7 @@ nano .env
 
 **선택 값:**
 - `SLACK_WEBHOOK_URL`: Slack 알림 (나중에 설정 가능)
-- `BOJOGEUM24_API_KEY`: 보조금24 API (나중에 설정 가능)
+- `PUBLIC_DATA_PORTAL_API_KEY`: 공공데이터포털 인증키 (복지로, 일자리, 행정안전부 등 통합)
 
 ### Step 3: 로컬 테스트
 

@@ -15,7 +15,7 @@ def test_collector():
     print("--- Starting Data Collector Test ---")
     
     # Check API Key
-    api_key = os.environ.get('BOJOGEUM24_API_KEY')
+    api_key = os.environ.get('PUBLIC_DATA_PORTAL_API_KEY')
     print(f"API Key present: {'Yes' if api_key else 'No'}")
     
     # Mock Event

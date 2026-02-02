@@ -8,7 +8,7 @@ confirm_changeset = false
 capabilities = "CAPABILITY_IAM"
 disable_rollback = true
 image_repositories = []
-parameter_overrides = "SupabaseUrl=\"https://ladqubaousblucmrqcrr.supabase.co\" SupabaseServiceKey=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhZHF1YmFvdXNibHVjbXJxY3JyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2ODgyNDI1MiwiZXhwIjoyMDg0NDAwMjUyfQ.YZfsje16TIRzEKI9N6WgH-49XH-VPqLJwqwp4LlwhxY\" BedrockModelId=\"apac.amazon.nova-lite-v1:0\" TitanEmbeddingModelId=\"amazon.titan-embed-text-v2:0\" OpenAIApiKey=\"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\" Bojogeum24ApiKey=\"82b26bbf4c159c48aeb0570892efdce9d3438cf0acf78b2cffd055952bd2ddba\" MoisApiKey=\"\""
+parameter_overrides = "SupabaseUrl=\"https://ladqubaousblucmrqcrr.supabase.co\" SupabaseServiceKey=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhZHF1YmFvdXNibHVjbXJxY3JyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2ODgyNDI1MiwiZXhwIjoyMDg0NDAwMjUyfQ.YZfsje16TIRzEKI9N6WgH-49XH-VPqLJwqwp4LlwhxY\" BedrockModelId=\"apac.amazon.nova-lite-v1:0\" TitanEmbeddingModelId=\"amazon.titan-embed-text-v2:0\" OpenAIApiKey=\"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\" PublicDataPortalApiKey=\"82b26bbf4c159c48aeb0570892efdce9d3438cf0acf78b2cffd055952bd2ddba\""
 
 [default.global.parameters]
 region = "ap-northeast-2"

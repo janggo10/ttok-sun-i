@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="똑!선이 - 시니어를 위한 AI 기반 맞춤형 복지 및 일자리 추천 서비스">
+    <title>똑!선이 - 시니어 맞춤형 복지 및 일자리 추천</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "맑은 고딕", sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            padding: 60px 20px;
+            color: white;
+        }
+
+        h1 {
+            font-size: 3em;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .subtitle {
+            font-size: 1.5em;
+            opacity: 0.9;
+            margin-bottom: 30px;
+        }
+
+        .cta-button {
+            display: inline-block;
+            background: #FFD700;
+            color: #333;
+            padding: 15px 40px;
+            border-radius: 30px;
+            text-decoration: none;
+            font-size: 1.2em;
+            font-weight: bold;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.4);
+        }
+
+        main {
+            background: white;
+            border-radius: 20px;
+            padding: 60px 40px;
+            margin: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        .section {
+            margin-bottom: 50px;
+        }
+
+        h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 2em;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 30px;
+            margin-top: 30px;
+        }
+
+        .feature-card {
+            background: #f8f9fa;
+            padding: 30px;
+            border-radius: 15px;
+            text-align: center;
+            transition: transform 0.3s;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .feature-icon {
+            font-size: 3em;
+            margin-bottom: 15px;
+        }
+
+        .feature-title {
+            font-size: 1.3em;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #667eea;
+        }
+
+        .tech-stack {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .tech-badge {
+            background: #e9ecef;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            color: #495057;
+            border: 2px solid #dee2e6;
+        }
+
+        .info-box {
+            background: #e7f3ff;
+            border-left: 5px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+
+        .contact-info {
+            background: #f8f9fa;
+            padding: 30px;
+            border-radius: 15px;
+            margin-top: 30px;
+        }
+
+        .contact-item {
+            margin: 15px 0;
+            font-size: 1.1em;
+        }
+
+        .contact-item strong {
+            color: #667eea;
+            min-width: 120px;
+            display: inline-block;
+        }
+
+        footer {
+            text-align: center;
+            padding: 30px;
+            color: white;
+            opacity: 0.9;
+        }
+
+        a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2em;
+            }
+            
+            .subtitle {
+                font-size: 1.2em;
+            }
+
+            main {
+                padding: 30px 20px;
+            }
+
+            .feature-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>🎯 똑!선이</h1>
+            <p class="subtitle">시니어를 위한 AI 기반 맞춤형 복지 및 일자리 추천 서비스</p>
+            <a href="https://kko.kakao.com/-MYV6Yigbd" class="cta-button" target="_blank">
+                💬 카카오톡 채널 바로가기
+            </a>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- 서비스 소개 -->
+        <section class="section">
+            <h2>📖 서비스 소개</h2>
+            <p style="font-size: 1.2em; line-height: 1.8; margin-top: 20px;">
+                <strong>똑!선이</strong>는 60세 이상 시니어를 위한 AI 기반 맞춤형 복지혜택 및 공공일자리 추천 서비스입니다.<br>
+                카카오톡 챗봇을 통해 사용자의 거주지역, 연령, 생애주기에 맞는 복지 서비스와 일자리 정보를 
+                자동으로 검색하고 추천합니다.
+            </p>
+            <div class="info-box">
+                <strong>💡 이런 분들에게 추천합니다!</strong>
+                <ul style="margin-left: 20px; margin-top: 10px;">
+                    <li>복잡한 복지 정보를 쉽게 찾고 싶으신 분</li>
+                    <li>나에게 맞는 공공일자리를 찾고 싶으신 분</li>
+                    <li>자연어로 편하게 질문하고 싶으신 분 (예: "치매 관련 서비스 있나요?")</li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- 주요 기능 -->
+        <section class="section">
+            <h2>✨ 주요 기능</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🎯</div>
+                    <div class="feature-title">맞춤형 추천</div>
+                    <p>거주지역, 연령, 생애주기 기반으로<br>나에게 딱 맞는 정보만!</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🤖</div>
+                    <div class="feature-title">AI 검색</div>
+                    <p>자연어로 편하게 질문하면<br>AI가 알아서 찾아드려요</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🏛️</div>
+                    <div class="feature-title">복지 서비스</div>
+                    <p>국가/지방 복지 정보를<br>한 곳에서 통합 제공</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">💼</div>
+                    <div class="feature-title">일자리 정보</div>
+                    <p>시니어 대상 공공일자리<br>맞춤 추천 (준비 중)</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 사용 방법 -->
+        <section class="section">
+            <h2>📱 사용 방법</h2>
+            <ol style="font-size: 1.1em; line-height: 2; margin-left: 20px; margin-top: 20px;">
+                <li><strong>카카오톡 채널 추가</strong> - 위의 버튼을 클릭해서 '똑!선이' 채널 추가</li>
+                <li><strong>간단한 정보 입력</strong> - 거주지역, 출생연도, 생애주기 선택</li>
+                <li><strong>질문하기</strong> - "수술비 지원 있나요?" 같은 자연어로 질문</li>
+                <li><strong>추천 받기</strong> - AI가 나에게 맞는 서비스를 자동으로 찾아드려요!</li>
+            </ol>
+        </section>
+
+        <!-- 기술 스택 -->
+        <section class="section">
+            <h2>🔧 기술 스택</h2>
+            <p style="margin-top: 20px; font-size: 1.1em;">
+                안정적이고 확장 가능한 최신 기술로 개발되었습니다.
+            </p>
+            <div class="tech-stack">
+                <span class="tech-badge">🐍 Python 3.11</span>
+                <span class="tech-badge">☁️ AWS Lambda</span>
+                <span class="tech-badge">🗄️ Supabase (PostgreSQL)</span>
+                <span class="tech-badge">🤖 OpenAI GPT</span>
+                <span class="tech-badge">🔍 Vector Search</span>
+                <span class="tech-badge">💬 KakaoTalk Skill API</span>
+                <span class="tech-badge">🔄 AWS SAM</span>
+            </div>
+        </section>
+
+        <!-- 개발 현황 -->
+        <section class="section">
+            <h2>🚀 개발 현황</h2>
+            <div style="margin-top: 20px;">
+                <h3 style="color: #28a745; margin-bottom: 10px;">✅ 완료된 기능</h3>
+                <ul style="margin-left: 20px; line-height: 1.8;">
+                    <li>카카오톡 챗봇 기본 구조</li>
+                    <li>사용자 온보딩 플로우</li>
+                    <li>복지 서비스 AI 검색 및 추천</li>
+                    <li>복지로 API 연동 (10,000+ 복지 서비스 데이터)</li>
+                    <li>OpenAI 임베딩 및 벡터 검색</li>
+                    <li>AWS Lambda 배포 및 운영</li>
+                </ul>
+
+                <h3 style="color: #ffc107; margin: 20px 0 10px;">🔧 개발 중</h3>
+                <ul style="margin-left: 20px; line-height: 1.8;">
+                    <li>고용24 채용정보 API 연동</li>
+                    <li>시니어 일자리 추천 기능</li>
+                    <li>검색 정확도 최적화</li>
+                </ul>
+
+                <h3 style="color: #667eea; margin: 20px 0 10px;">📋 향후 계획</h3>
+                <ul style="margin-left: 20px; line-height: 1.8;">
+                    <li>Webview 기반 UX 개선</li>
+                    <li>검색 이력 기반 추천 고도화</li>
+                    <li>알림 기능 추가 (신규 복지/일자리 정보)</li>
+                </ul>
+            </div>
+        </section>
+
+        <!-- 연락처 -->
+        <section class="section">
+            <h2>📞 연락처</h2>
+            <div class="contact-info">
+                <div class="contact-item">
+                    <strong>카카오톡 채널:</strong> 
+                    <a href="https://kko.kakao.com/-MYV6Yigbd" target="_blank">똑!선이 채널</a>
+                </div>
+                <div class="contact-item">
+                    <strong>채널 검색:</strong> 
+                    <a href="https://kko.kakao.com/PQQvMs_goj" target="_blank">검색 링크</a>
+                </div>
+                <div class="contact-item">
+                    <strong>서비스 문의:</strong> 카카오톡 채널로 메시지 주세요
+                </div>
+            </div>
+        </section>
+
+        <!-- 프로젝트 정보 -->
+        <section class="section">
+            <h2>💻 프로젝트 정보</h2>
+            <div class="info-box">
+                <p><strong>📍 서비스 상태:</strong> 베타 테스트 준비 중</p>
+                <p><strong>📅 정식 런칭:</strong> 2026년 2월 예정</p>
+                <p><strong>🎯 타겟 사용자:</strong> 60세 이상 시니어</p>
+                <p><strong>🏗️ 개발 기간:</strong> 2025년 11월 ~ 현재</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2026 똑!선이. All rights reserved.</p>
+            <p style="margin-top: 10px; opacity: 0.8;">
+                시니어를 위한 맞춤형 복지 및 일자리 추천 서비스
+            </p>
+        </div>
+    </footer>
+</body>
+</html>

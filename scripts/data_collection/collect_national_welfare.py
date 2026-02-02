@@ -27,7 +27,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 load_dotenv()
 
 # Configuration - Load from .env file
-BOKJIRO_API_KEY = os.getenv("BOKJIRO_API_KEY")
+PUBLIC_DATA_PORTAL_API_KEY = os.getenv("PUBLIC_DATA_PORTAL_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
@@ -54,7 +54,7 @@ def get_now_kst():
 
 def fetch_national_welfare_list(page_no=1, num_of_rows=1000):
     params = {
-        "serviceKey": BOKJIRO_API_KEY,
+        "serviceKey": PUBLIC_DATA_PORTAL_API_KEY,
         "numOfRows": num_of_rows,
         "pageNo": page_no,
         "callTp": "L",  # List type
@@ -87,7 +87,7 @@ def fetch_national_welfare_list(page_no=1, num_of_rows=1000):
 
 def fetch_national_welfare_detail(serv_id):
     params = {
-        "serviceKey": BOKJIRO_API_KEY,
+        "serviceKey": PUBLIC_DATA_PORTAL_API_KEY,
         "callTp": "D", # Detail type
         "servId": serv_id
     }
@@ -166,8 +166,8 @@ def compute_content_hash(text):
 def main():
     logger.info("Starting National Welfare Data Collection...")
     
-    if not BOKJIRO_API_KEY:
-        logger.error("BOKJIRO_API_KEY is missing.")
+    if not PUBLIC_DATA_PORTAL_API_KEY:
+        logger.error("PUBLIC_DATA_PORTAL_API_KEY is missing.")
         return
 
     supabase = get_supabase_client()
